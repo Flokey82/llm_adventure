@@ -1,0 +1,252 @@
+// This file handles the generation of rooms and doors for the game map. It includes
+// logic for placing rooms, creating doors, and ensuring map reachability.
+
+package adventure
+
+import (
+	"fmt"
+	"math/rand"
+	"time"
+)
+
+// Room represents a single room in the game world.
+type Room struct {
+	ID         string
+	BasePrompt string // short tags/facts used to generate a narrative
+	Narrative  string // cached generated description
+	Items      []string
+	Doors      map[string]*Door
+	X          int
+	Y          int
+	Visited    bool
+}
+
+// Door represents a connection between two rooms.
+type Door struct {
+	Open bool
+	// endpoints
+	A      string // one room ID
+	ADir   string // direction from room A
+	B      string // other room ID
+	BDir   string // direction from room B
+	Locked bool
+}
+
+// OtherSide returns the room ID and direction on the opposite side of the door
+// given a room ID that is one end of the door.
+func (d *Door) OtherSide(roomID string) (otherRoom string, direction string, ok bool) {
+	if d == nil {
+		return "", "", false
+	}
+	if roomID == d.A {
+		return d.B, d.BDir, true
+	}
+	if roomID == d.B {
+		return d.A, d.ADir, true
+	}
+	return "", "", false
+}
+
+// RoomTemplate defines the properties of a room to be generated.
+type RoomTemplate struct {
+	Name        string
+	Description string
+	Items       []string
+	MaxCount    int
+}
+
+var roomTemplates = []RoomTemplate{
+	{Name: "entry_hall", Description: "victorian entry hall, peeling wallpaper, dusty chandelier, atmospheric lighting", Items: []string{"rusty_key", "lantern"}, MaxCount: 1},
+	{Name: "kitchen", Description: "abandoned kitchen, rotting food smell, rusty utensils, stone countertops", Items: []string{"knife"}, MaxCount: 2},
+	{Name: "bedroom", Description: "narrow bedroom, creaky bed, moth-eaten curtains", Items: []string{"pillow"}, MaxCount: 3},
+	{Name: "library", Description: "dusty library, tall shelves, leather-bound tomes", Items: []string{"old_book"}, MaxCount: 1},
+	{Name: "cellar", Description: "cold damp cellar, stone walls, faint dripping", Items: []string{"bottle"}, MaxCount: 1},
+	{Name: "hallway", Description: "narrow corridor with faded wallpaper", Items: []string{}, MaxCount: 4},
+}
+
+type coord struct{ x, y int }
+
+// MapGenerator holds the state for generating a game map.
+type MapGenerator struct {
+	rand      *rand.Rand
+	width     int
+	height    int
+	grid      map[coord]string // coord -> roomID
+	rooms     map[string]*Room
+	placed    []coord
+	idCounter map[string]int
+}
+
+// NewMapGenerator creates a new map generator.
+// The `idCounter` field ensures unique room IDs by tracking the number of rooms
+// created for each base name.
+func NewMapGenerator(seed int64, width, height int) *MapGenerator {
+	if seed == 0 {
+		seed = time.Now().UnixNano()
+	}
+	return &MapGenerator{
+		rand:      rand.New(rand.NewSource(seed)),
+		width:     width,
+		height:    height,
+		grid:      make(map[coord]string),
+		rooms:     make(map[string]*Room),
+		placed:    []coord{},
+		idCounter: make(map[string]int),
+	}
+}
+
+func (mg *MapGenerator) makeID(base string) string {
+	if mg.idCounter[base] == 0 {
+		mg.idCounter[base] = 1
+		return base
+	}
+	mg.idCounter[base]++
+	return fmt.Sprintf("%s_%d", base, mg.idCounter[base])
+}
+
+func (mg *MapGenerator) inBounds(c coord) bool {
+	return c.x >= 0 && c.x < mg.width && c.y >= 0 && c.y < mg.height
+}
+
+func (mg *MapGenerator) placeRooms() {
+	// Place entry_hall at center
+	// The retry mechanism ensures that rooms are placed adjacent to existing rooms.
+	// If placement fails after 200 attempts, the room is skipped.
+	cx, cy := mg.width/2, mg.height/2
+	startID := mg.makeID("entry_hall")
+	mg.rooms[startID] = &Room{ID: startID, BasePrompt: roomTemplates[0].Description, Narrative: "", Items: append([]string{}, roomTemplates[0].Items...), Doors: map[string]*Door{}, X: cx, Y: cy}
+	mg.grid[coord{cx, cy}] = startID
+	mg.placed = append(mg.placed, coord{cx, cy})
+
+	dirs := []coord{{0, -1}, {0, 1}, {-1, 0}, {1, 0}}
+
+	// For each template (skipping entry_hall) create between 1 and MaxCount copies
+	for _, t := range roomTemplates[1:] {
+		count := mg.rand.Intn(t.MaxCount) + 1
+		for i := 0; i < count; i++ {
+			placedOK := false
+			// try to place adjacent to any existing room
+			for attempt := 0; attempt < 200 && !placedOK; attempt++ {
+				anchor := mg.placed[mg.rand.Intn(len(mg.placed))]
+				d := dirs[mg.rand.Intn(len(dirs))]
+				nc := coord{anchor.x + d.x, anchor.y + d.y}
+				if !mg.inBounds(nc) {
+					continue
+				}
+				if _, exists := mg.grid[nc]; exists {
+					continue
+				}
+				// place room here
+				rid := mg.makeID(t.Name)
+				mg.rooms[rid] = &Room{ID: rid, BasePrompt: t.Description, Narrative: "", Items: append([]string{}, t.Items...), Doors: map[string]*Door{}, X: nc.x, Y: nc.y}
+				mg.grid[nc] = rid
+				mg.placed = append(mg.placed, nc)
+				placedOK = true
+			}
+			// if placement failed after many attempts, give up on this copy
+		}
+	}
+}
+
+func (mg *MapGenerator) createDoors() []*Door {
+	// The `opposite` function ensures that doors are bidirectional by returning
+	// the opposite direction for a given direction.
+	opposite := func(dir string) string {
+		switch dir {
+		case "north":
+			return "south"
+		case "south":
+			return "north"
+		case "east":
+			return "west"
+		case "west":
+			return "east"
+		}
+		return ""
+	}
+
+	var createdDoors []*Door
+	for c, id := range mg.grid {
+		neighs := map[string]coord{
+			"north": {c.x, c.y - 1}, "south": {c.x, c.y + 1},
+			"west": {c.x - 1, c.y}, "east": {c.x + 1, c.y},
+		}
+		for dir, nc := range neighs {
+			if nid, ok := mg.grid[nc]; ok {
+				r := mg.rooms[id]
+				if _, exists := r.Doors[dir]; exists {
+					continue
+				}
+				d := &Door{A: id, ADir: dir, B: nid, BDir: opposite(dir)}
+				r.Doors[dir] = d
+				mg.rooms[nid].Doors[opposite(dir)] = d
+				createdDoors = append(createdDoors, d)
+			}
+		}
+	}
+	return createdDoors
+}
+
+func (mg *MapGenerator) ensureReachability(createdDoors []*Door) {
+	// This function ensures that all rooms are reachable by marking doors that
+	// are part of the spanning tree. The `treeDoors` map tracks these doors.
+	// Doors not in the spanning tree are locked with a 30% probability.
+	adj := map[string]map[string]*Door{}
+	for _, r := range mg.rooms {
+		adj[r.ID] = map[string]*Door{}
+		for _, d := range r.Doors {
+			if d == nil {
+				continue
+			}
+			if other, _, ok := d.OtherSide(r.ID); ok {
+				adj[r.ID][other] = d
+			}
+		}
+	}
+
+	visited := map[string]bool{}
+	var stack []string
+	startID := "entry_hall"
+	stack = append(stack, startID)
+	if _, ok := mg.rooms[startID]; ok {
+		visited[startID] = true
+	}
+
+	treeDoors := map[*Door]bool{}
+	for len(stack) > 0 {
+		v := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for nbr, d := range adj[v] {
+			if !visited[nbr] {
+				visited[nbr] = true
+				stack = append(stack, nbr)
+				treeDoors[d] = true
+			}
+		}
+	}
+
+	for _, d := range createdDoors {
+		if treeDoors[d] {
+			d.Locked = false
+		} else {
+			d.Locked = mg.rand.Intn(100) < 30 // 30% locked
+		}
+		d.Open = false
+	}
+}
+
+// GenerateMapSeeded is the seeded generator. Provide a seed for deterministic
+// output. The default map dimensions are 11x9.
+func GenerateMapSeeded(seed int64) map[string]*Room {
+	mg := NewMapGenerator(seed, 11, 9)
+	mg.placeRooms()
+	createdDoors := mg.createDoors()
+	mg.ensureReachability(createdDoors)
+	return mg.rooms
+}
+
+// GenerateMap is the default (non-deterministic) generator and delegates to
+// GenerateMapSeeded with a timestamp seed.
+func GenerateMap() map[string]*Room {
+	return GenerateMapSeeded(time.Now().UnixNano())
+}
