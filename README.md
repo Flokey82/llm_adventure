@@ -5,10 +5,21 @@ LLM Adventure is a text-based adventure game framework that leverages language m
 ## Features
 
 - **Dynamic Room Descriptions**: Rooms are described using AI-generated narratives based on their properties.
-- **Interactive NPCs**: NPCs can respond to player input using AI-driven dialogue systems.
+- **Interactive NPCs** (not tested yet): NPCs can respond to player input using AI-driven dialogue systems.
 - **Flexible Game Logic**: Core mechanics like movement, item usage, and NPC interactions are implemented with extensibility in mind.
 - **Text-Based UI**: Includes a terminal-based user interface for manual play.
 - **Integration with OpenAI**: Supports OpenAI's API for generating narratives and handling tool calls.
+
+## TODO:
+
+- [ ] Implement NPC interactions and dialogue.
+- [ ] Add more complex puzzles and item interactions.
+- [ ] Enhance the TUI with better formatting and user feedback.
+- [ ] Implement a save/load system for game progress.
+- [ ] Add more tools for AI to interact with the game state.
+- [ ] Write comprehensive tests for game mechanics and AI integration.
+- [ ] Add more npcs and room types to create a richer game world.
+- [ ] Allow the LLM to generate new rooms, items, and NPCs dynamically as the player explores.
 
 ## Project Structure
 
