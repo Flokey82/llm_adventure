@@ -6,7 +6,9 @@ LLM Adventure is a text-based adventure game framework that leverages language m
 
 - **Dynamic Room Descriptions**: Rooms are described using AI-generated narratives based on their properties.
 - **Persistent Player Notes**: The LLM maintains persistent notes about the player's state (e.g., "covered in poop", "smells like lavender") to ensure narrative continuity.
-- **Interactive NPCs**: NPCs can respond to player input using AI-driven dialogue systems.
+- **Interactive NPCs**: NPCs can respond to player input using AI-driven dialogue systems, and now possess persistent **hitpoints**, **memory**, and **world history**.
+- **Combat & Life Mechanics**: Players can **attack** NPCs, potentially killing them. Dead NPCs remain in rooms as corpses and can sometimes be **resurrected**.
+- **Selective Tool Exposure**: The LLM is dynamically presented only with tools that make sense for the current context (e.g., `talk_to` only appears if an NPC is present).
 - **Dynamic Room Details**: Permanent narrative details added by the LLM (e.g., "stinky air") are visible in the TUI Room pane.
 - **Flexible Game Logic**: Core mechanics like movement, item usage, and NPC interactions are implemented with extensibility in mind.
 - **Text-Based UI**: Includes a terminal-based user interface with dedicated panes for narration, room info, inventory, and maps.
@@ -18,7 +20,7 @@ LLM Adventure is a text-based adventure game framework that leverages language m
 - [x] Enhance the TUI with better formatting and user feedback.
 - [x] Add more tools for AI to interact with the game state.
 - [ ] Write comprehensive tests for game mechanics and AI integration.
-- [ ] Add more npcs and room types to create a richer game world.
+- [x] Add more npcs and room types to create a richer game world.
 
 ## Project Structure
 
@@ -99,6 +101,8 @@ You can also use custom system prompts by injecting custom AI functions in `cmd/
 - `open <direction>`: Open a door in the specified direction.
 - `take <item>`: Pick up an item.
 - `use <item> on <target>`: Use an item on a target.
+- `attack <target>`: Attack an NPC or object.
+- `talk <npc>`: Initiate a conversation with an NPC.
 - `inventory`: View your inventory.
 - `save`: Save the current game state.
 - `load`: Load the last saved game state.

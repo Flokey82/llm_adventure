@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-// Game represents the state of the game, including the player's current location,
-// inventory, rooms, NPCs, and timers for time-based events.
 type Game struct {
 	CurrentRoomID          string                                // ID of the room the player is currently in
 	Inventory              []string                              // List of items the player is carrying
@@ -24,6 +22,8 @@ type Game struct {
 	Timers                 map[string]int                                // Timers for time-based events, keyed by strings
 	TimerCallbacks         map[string]func(*Game, string)                // Callbacks for timers
 	PlayerNotes            []string                              // Persistent notes about the player (e.g. "covered in poop")
+	PlayerHP               int                                   // Current hitpoints of the player
+	PlayerMaxHP            int                                   // Maximum hitpoints of the player
 }
 
 // NPC represents a non-player character in the world.
@@ -31,9 +31,15 @@ type Game struct {
 type NPC struct {
 	ID          string // Unique identifier for the NPC
 	Name        string // Display name of the NPC
+	Description string // Atmosphere description of the NPC
 	Location    string // ID of the room the NPC is currently in
 	Persona     string // System prompt for character dialogue
 	Disposition int    // 0 = Hostile, 100 = Friendly
+	MaxHP       int    // Maximum hitpoints
+	CurrentHP   int    // Current hitpoints
+	Dead        bool   // True if the NPC is dead
+	Memory      string // Condensed memory of past interactions
+	History     string // Lore or history related to the world
 }
 
 // NewGame creates a new game instance. Optionally, a seed can be provided for deterministic map generation.
@@ -56,12 +62,23 @@ func NewGame(seed ...int64) *Game {
 		NPCs:           map[string]*NPC{},
 		Timers:         map[string]int{},
 		TimerCallbacks: make(map[string]func(*Game, string)),
+		PlayerHP:       100,
+		PlayerMaxHP:    100,
 	}
 
 	// Add an example wandering monster (Grue) to a non-start room
 	for id := range rooms {
 		if id != "entry_hall" {
-			g.NPCs["grue"] = &NPC{ID: "grue", Name: "Grue", Location: id, Persona: "A lurking, wordless horror that moves silently.", Disposition: 0}
+			g.NPCs["grue"] = &NPC{
+				ID:          "grue",
+				Name:        "Grue",
+				Description: "A terrifying shadow with many sharp teeth.",
+				Location:    id,
+				Persona:     "A lurking, wordless horror that moves silently.",
+				Disposition: 0,
+				MaxHP:       50,
+				CurrentHP:   50,
+			}
 			break
 		}
 	}
@@ -394,13 +411,16 @@ func (g *Game) listNPCsInRoom(room *Room) string {
 			continue
 		}
 		if strings.EqualFold(n.Location, room.ID) {
-			mood := "neutral"
+			state := "neutral"
 			if n.Disposition <= 33 {
-				mood = "hostile"
+				state = "hostile"
 			} else if n.Disposition >= 67 {
-				mood = "friendly"
+				state = "friendly"
 			}
-			present = append(present, fmt.Sprintf("%s (%s)", n.Name, mood))
+			if n.Dead {
+				state = "dead"
+			}
+			present = append(present, fmt.Sprintf("%s (%s)", n.Name, state))
 		}
 	}
 	if len(present) > 0 {
@@ -427,6 +447,90 @@ func (g *Game) Look() string {
 
 	desc := fmt.Sprintf("CURRENT ROOM NARRATIVE: %s%s%s\nPRESENT: %s\nVISIBLE ITEMS: %v\nDOORS: %v\nGLIMPSES: %s", narrative, detailsStr, notesStr, presentStr, room.Items, doors, strings.Join(glimpses, " "))
 	return desc
+}
+// SpawnNPC creates a new NPC and places it in the current room.
+func (g *Game) SpawnNPC(id, name, desc, persona string, disposition, hp int, history string) string {
+	if _, exists := g.NPCs[id]; exists {
+		return fmt.Sprintf("NPC with ID %s already exists.", id)
+	}
+	g.NPCs[id] = &NPC{
+		ID:          id,
+		Name:        name,
+		Description: desc,
+		Location:    g.CurrentRoomID,
+		Persona:     persona,
+		Disposition: disposition,
+		MaxHP:       hp,
+		CurrentHP:   hp,
+		History:     history,
+	}
+	return fmt.Sprintf("Spawned NPC: %s. %s", name, desc)
+}
+
+// UpdateNPC updates the properties of an existing NPC.
+func (g *Game) UpdateNPC(id, desc, memory string, disposition int, history string) string {
+	npc, exists := g.NPCs[id]
+	if !exists {
+		return fmt.Sprintf("NPC with ID %s not found.", id)
+	}
+	if desc != "" {
+		npc.Description = desc
+	}
+	if memory != "" {
+		npc.Memory = memory
+	}
+	if disposition != -1 { // Use -1 as "no change" sentinel if needed, or check if provided
+		npc.Disposition = disposition
+	}
+	if history != "" {
+		npc.History = history
+	}
+	return fmt.Sprintf("Updated NPC: %s.", npc.Name)
+}
+
+// Attack deals damage to a target NPC.
+func (g *Game) Attack(targetName, reasoning string) string {
+	var target *NPC
+	for _, n := range g.NPCs {
+		if (strings.EqualFold(n.Name, targetName) || strings.EqualFold(n.ID, targetName)) && n.Location == g.CurrentRoomID {
+			target = n
+			break
+		}
+	}
+	if target == nil {
+		return fmt.Sprintf("You don't see %s here to attack.", targetName)
+	}
+	if target.Dead {
+		return fmt.Sprintf("%s is already dead.", target.Name)
+	}
+
+	// Simple combat logic: deal random damage
+	damage := rand.Intn(20) + 5
+	target.CurrentHP -= damage
+	if target.CurrentHP <= 0 {
+		target.CurrentHP = 0
+		target.Dead = true
+		return fmt.Sprintf("You attack %s: %s. You deal %d damage and KILL them!", target.Name, reasoning, damage)
+	}
+
+	// Hostile response
+	target.Disposition = 0
+
+	return fmt.Sprintf("You attack %s: %s. You deal %d damage. They look %s.", target.Name, reasoning, damage, "furious")
+}
+
+// Resurrect brings a dead NPC back to life.
+func (g *Game) Resurrect(id, reasoning string) string {
+	npc, exists := g.NPCs[id]
+	if !exists {
+		return fmt.Sprintf("NPC with ID %s not found.", id)
+	}
+	if !npc.Dead {
+		return fmt.Sprintf("%s is already alive.", npc.Name)
+	}
+	npc.Dead = false
+	npc.CurrentHP = npc.MaxHP / 2 // Restore half HP
+	return fmt.Sprintf("You resurrect %s: %s. They gasp as life returns to their body.", npc.Name, reasoning)
 }
 
 // Helper function to normalize item names for matching.

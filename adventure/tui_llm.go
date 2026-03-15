@@ -65,7 +65,16 @@ func (g *Game) RunTUIWithLLM(client LLMClient, model string) error {
 			Role:    openai.ChatMessageRoleSystem,
 			Content: `You are the narrator of a text adventure game. Use the 'look' tool immediately when the game starts or room changes. Rely on tool outputs for state. Do not invent items or exits. Describe scene atmospherically. Call tools rather than saying you did something.
 			
-Keep persistent notes about the player using update_player_notes (e.g. if they are covered in poop, smelling of lavender, or have a specific injury). These notes will be visible to you in the Look tool output.`,
+Keep persistent notes about the player using update_player_notes (e.g. if they are covered in poop, smelling of lavender, or have a specific injury). These notes will be visible to you in the Look tool output.
+
+NPCs & COMBAT:
+- You can create new NPCs using spawn_npc if it makes sense (e.g. encountering a monster or a villager).
+- NPCs have hitpoints (HP). If they reach 0, they are DEAD/CORPSES.
+- You can update NPC state (description, memory, disposition, history) using update_npc.
+- Use 'memory' to store condensed information about what the player did or said.
+- Some NPCs might be corpses initially (e.g. skeletons); you can use spawn_npc with Dead=true (via logic or just set HP to 0) or simply spawn them and then kill them. 
+- You can resurrect dead NPCs using resurrect if the player uses a suitable method or item.
+- Players can 'attack' NPCs. Describe the results based on the damage dealt.`,
 		},
 		{Role: openai.ChatMessageRoleUser, Content: "Start the game. Look around."},
 	}
@@ -314,7 +323,7 @@ Keep persistent notes about the player using update_player_notes (e.g. if they a
 		messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: userInput})
 
 		// Send request
-		req := openai.ChatCompletionRequest{Model: model, Messages: messages, Tools: Tools()}
+		req := openai.ChatCompletionRequest{Model: model, Messages: messages, Tools: Tools(g)}
 		resp, err := client.CreateChatCompletion(context.Background(), req)
 		if err != nil {
 			app.QueueUpdateDraw(func() { appendEvent("LLM error: " + err.Error()) })

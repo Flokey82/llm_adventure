@@ -106,6 +106,34 @@ func (g *Game) ExecuteToolCallsFromMessage(msg openai.ChatCompletionMessage) ([]
 			} else {
 				toolOutput = "invalid arguments to add_room_detail"
 			}
+		case "spawn_npc":
+			id, _ := args["npc_id"].(string)
+			name, _ := args["name"].(string)
+			desc, _ := args["description"].(string)
+			persona, _ := args["persona"].(string)
+			dispositionRaw, _ := args["disposition"].(float64)
+			hpRaw, _ := args["hp"].(float64)
+			history, _ := args["history"].(string)
+			toolOutput = g.SpawnNPC(id, name, desc, persona, int(dispositionRaw), int(hpRaw), history)
+		case "update_npc":
+			id, _ := args["npc_id"].(string)
+			desc, _ := args["description"].(string)
+			memory, _ := args["memory"].(string)
+			dispositionRaw, ok := args["disposition"].(float64)
+			disposition := -1
+			if ok {
+				disposition = int(dispositionRaw)
+			}
+			history, _ := args["history"].(string)
+			toolOutput = g.UpdateNPC(id, desc, memory, disposition, history)
+		case "attack":
+			target, _ := args["target_name"].(string)
+			reasoning, _ := args["reasoning"].(string)
+			toolOutput = g.Attack(target, reasoning)
+		case "resurrect":
+			id, _ := args["npc_id"].(string)
+			reasoning, _ := args["reasoning"].(string)
+			toolOutput = g.Resurrect(id, reasoning)
 		case "update_player_notes":
 			// Update the persistent notes about the player
 			if notesRaw, ok := args["notes"].([]interface{}); ok {

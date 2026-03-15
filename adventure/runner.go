@@ -35,7 +35,7 @@ func (g *Game) RunInteractive(client LLMClient, model string) error {
 			messages = append(messages, recent...)
 		}
 
-		req := openai.ChatCompletionRequest{Model: model, Messages: messages, Tools: Tools()}
+		req := openai.ChatCompletionRequest{Model: model, Messages: messages, Tools: Tools(g)}
 		resp, err := client.CreateChatCompletion(ctx, req)
 		if err != nil {
 			return err

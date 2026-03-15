@@ -6,10 +6,10 @@ import (
 )
 
 // Tools returns a list of tool definitions that the LLM can call to interact with the game environment.
-// Each tool represents a specific action the player can perform, such as moving, interacting with items, or talking to NPCs.
-func Tools() []openai.Tool {
-	return []openai.Tool{
-		{
+// It selectively filters tools based on the current game state (e.g., presence of items or NPCs).
+func Tools(g *Game) []openai.Tool {
+	allTools := map[string]openai.Tool{
+		"move": {
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
 				Name:        "move",
@@ -17,14 +17,13 @@ func Tools() []openai.Tool {
 				Parameters: jsonschema.Definition{
 					Type: jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{
-						// The direction in which the player wants to move. Must be one of the specified values.
 						"direction": {Type: jsonschema.String, Enum: []string{"north", "south", "east", "west", "up", "down"}},
 					},
 					Required: []string{"direction"},
 				},
 			},
 		},
-		{
+		"discover_room": {
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
 				Name:        "discover_room",
@@ -39,7 +38,7 @@ func Tools() []openai.Tool {
 				},
 			},
 		},
-		{
+		"spawn_item": {
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
 				Name:        "spawn_item",
@@ -54,7 +53,7 @@ func Tools() []openai.Tool {
 				},
 			},
 		},
-		{
+		"open_door": {
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
 				Name:        "open_door",
@@ -62,14 +61,13 @@ func Tools() []openai.Tool {
 				Parameters: jsonschema.Definition{
 					Type: jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{
-						// The direction of the door to open. Must be one of the specified values.
 						"direction": {Type: jsonschema.String, Enum: []string{"north", "south", "east", "west", "up", "down"}},
 					},
 					Required: []string{"direction"},
 				},
 			},
 		},
-		{
+		"take_item": {
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
 				Name:        "take_item",
@@ -77,14 +75,13 @@ func Tools() []openai.Tool {
 				Parameters: jsonschema.Definition{
 					Type: jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{
-						// The name of the item to pick up.
 						"item_name": {Type: jsonschema.String},
 					},
 					Required: []string{"item_name"},
 				},
 			},
 		},
-		{
+		"use_item": {
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
 				Name:        "use_item",
@@ -92,16 +89,14 @@ func Tools() []openai.Tool {
 				Parameters: jsonschema.Definition{
 					Type: jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{
-						// The name of the item to use.
-						"item_name": {Type: jsonschema.String},
-						// The name of the target on which the item is used.
+						"item_name":   {Type: jsonschema.String},
 						"target_name": {Type: jsonschema.String},
 					},
 					Required: []string{"item_name", "target_name"},
 				},
 			},
 		},
-		{
+		"talk_to": {
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
 				Name:        "talk_to",
@@ -109,16 +104,14 @@ func Tools() []openai.Tool {
 				Parameters: jsonschema.Definition{
 					Type: jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{
-						// The name of the NPC to talk to.
 						"npc_name": {Type: jsonschema.String},
-						// The message to send to the NPC.
-						"message": {Type: jsonschema.String},
+						"message":  {Type: jsonschema.String},
 					},
 					Required: []string{"npc_name", "message"},
 				},
 			},
 		},
-		{
+		"search": {
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
 				Name:        "search",
@@ -128,7 +121,7 @@ func Tools() []openai.Tool {
 				},
 			},
 		},
-		{
+		"look": {
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
 				Name:        "look",
@@ -138,7 +131,75 @@ func Tools() []openai.Tool {
 				},
 			},
 		},
-		{
+		"spawn_npc": {
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "spawn_npc",
+				Description: "Dynamically generate and place a new NPC in the room.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"npc_id":      {Type: jsonschema.String, Description: "Unique ID (snake_case)."},
+						"name":        {Type: jsonschema.String, Description: "Display name."},
+						"description": {Type: jsonschema.String, Description: "Visual description."},
+						"persona":     {Type: jsonschema.String, Description: "Dialogue persona/system prompt."},
+						"disposition": {Type: jsonschema.Integer, Description: "0-100 (0=hostile, 100=friendly)."},
+						"hp":          {Type: jsonschema.Integer, Description: "Starting/Max Hitpoints."},
+						"history":     {Type: jsonschema.String, Description: "World history or background lore."},
+					},
+					Required: []string{"npc_id", "name", "description", "persona", "disposition", "hp"},
+				},
+			},
+		},
+		"update_npc": {
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "update_npc",
+				Description: "Update an NPC's description, memory, or disposition after an event.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"npc_id":      {Type: jsonschema.String},
+						"description": {Type: jsonschema.String},
+						"memory":      {Type: jsonschema.String, Description: "Condensed memory of what just happened or what was told."},
+						"disposition": {Type: jsonschema.Integer, Description: "New disposition 0-100."},
+						"history":     {Type: jsonschema.String, Description: "New or updated history/lore."},
+					},
+					Required: []string{"npc_id"},
+				},
+			},
+		},
+		"attack": {
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "attack",
+				Description: "Attack an NPC or object. Deals damage based on reasoning.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"target_name": {Type: jsonschema.String},
+						"reasoning":   {Type: jsonschema.String, Description: "Why the player is attacking and how."},
+					},
+					Required: []string{"target_name"},
+				},
+			},
+		},
+		"resurrect": {
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "resurrect",
+				Description: "Attempt to raise an NPC from the dead or restore a corpse.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"npc_id":    {Type: jsonschema.String},
+						"reasoning": {Type: jsonschema.String, Description: "How the resurrection is performed."},
+					},
+					Required: []string{"npc_id"},
+				},
+			},
+		},
+		"update_player_notes": {
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
 				Name:        "update_player_notes",
@@ -147,7 +208,7 @@ func Tools() []openai.Tool {
 					Type: jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{
 						"notes": {
-							Type: jsonschema.Array,
+							Type:  jsonschema.Array,
 							Items: &jsonschema.Definition{Type: jsonschema.String},
 							Description: "The complete new list of player notes. Replaces the old list.",
 						},
@@ -157,4 +218,55 @@ func Tools() []openai.Tool {
 			},
 		},
 	}
+
+	// Filter logic
+	var tools []openai.Tool
+	
+	// Always available
+	always := []string{"move", "discover_room", "open_door", "search", "look", "spawn_item", "spawn_npc", "update_player_notes"}
+	for _, t := range always {
+		tools = append(tools, allTools[t])
+	}
+
+	room := g.Rooms[g.CurrentRoomID]
+	
+	// Only if room has items
+	if len(room.Items) > 0 {
+		tools = append(tools, allTools["take_item"])
+	}
+
+	// Only if player has items
+	if len(g.Inventory) > 0 {
+		tools = append(tools, allTools["use_item"])
+	}
+
+	// NPC related tools
+	hasNPC := false
+	hasDeadNPC := false
+	for _, n := range g.NPCs {
+		if n.Location == g.CurrentRoomID {
+			if n.Dead {
+				hasDeadNPC = true
+			} else {
+				hasNPC = true
+			}
+		}
+	}
+
+	if hasNPC {
+		tools = append(tools, allTools["talk_to"])
+		tools = append(tools, allTools["attack"])
+		tools = append(tools, allTools["update_npc"])
+	}
+
+	if hasDeadNPC {
+		tools = append(tools, allTools["resurrect"])
+		// You can also attack a corpse (e.g. to destroy it)
+		if !hasNPC {
+			tools = append(tools, allTools["attack"])
+			tools = append(tools, allTools["update_npc"])
+		}
+	}
+
+	return tools
 }
