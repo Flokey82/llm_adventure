@@ -97,6 +97,7 @@ You can also use custom system prompts by injecting custom AI functions in `cmd/
 ### Example Commands
 
 - `look`: Examine the current room.
+- `search`: Search the current room for hidden secrets or items.
 - `move <direction>`: Move to an adjacent room. (If no door exists, the game may dynamically generate a new area!)
 - `open <direction>`: Open a door in the specified direction.
 - `take <item>`: Pick up an item.
