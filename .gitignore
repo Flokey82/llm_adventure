@@ -1,0 +1,17 @@
+# Binaries
+llm_adventure
+test_bin
+
+# Go artifacts
+*.out
+*.exe
+
+# Save files
+*.json
+!go.mod
+!go.sum
+
+# IDEs
+.vscode/
+.idea/
+.DS_Store

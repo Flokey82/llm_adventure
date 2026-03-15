@@ -37,6 +37,19 @@ func (g *Game) ExecuteToolCallsFromMessage(msg openai.ChatCompletionMessage) ([]
 
 		var toolOutput string
 		switch toolCall.Function.Name {
+		case "discover_room":
+			if dir, ok := args["direction"].(string); ok {
+				toolOutput = g.DiscoverRoom(dir)
+			} else {
+				toolOutput = "invalid arguments to discover_room"
+			}
+		case "spawn_item":
+			if name, ok := args["item_name"].(string); ok {
+				reasoning, _ := args["reasoning"].(string) 
+				toolOutput = g.SpawnItem(name, reasoning)
+			} else {
+				toolOutput = "invalid arguments to spawn_item"
+			}
 		case "move":
 			// Move the player in a specified direction
 			if dir, ok := args["direction"].(string); ok {
@@ -80,9 +93,32 @@ func (g *Game) ExecuteToolCallsFromMessage(msg openai.ChatCompletionMessage) ([]
 			} else {
 				toolOutput = "invalid arguments to talk_to"
 			}
+		case "search":
+			// Search the current room
+			toolOutput = g.Search()
 		case "look":
 			// Look around the current room
 			toolOutput = g.Look()
+		case "add_room_detail":
+			// Add a permanent narrative detail to the current room
+			if detail, ok := args["detail"].(string); ok {
+				toolOutput = g.AddRoomDetail(detail)
+			} else {
+				toolOutput = "invalid arguments to add_room_detail"
+			}
+		case "update_player_notes":
+			// Update the persistent notes about the player
+			if notesRaw, ok := args["notes"].([]interface{}); ok {
+				var notes []string
+				for _, n := range notesRaw {
+					if ns, ok := n.(string); ok {
+						notes = append(notes, ns)
+					}
+				}
+				toolOutput = g.UpdatePlayerNotes(notes)
+			} else {
+				toolOutput = "invalid arguments to update_player_notes"
+			}
 		default:
 			// Handle unknown tools
 			toolOutput = "unknown tool"

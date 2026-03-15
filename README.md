@@ -5,21 +5,20 @@ LLM Adventure is a text-based adventure game framework that leverages language m
 ## Features
 
 - **Dynamic Room Descriptions**: Rooms are described using AI-generated narratives based on their properties.
-- **Interactive NPCs** (not tested yet): NPCs can respond to player input using AI-driven dialogue systems.
+- **Persistent Player Notes**: The LLM maintains persistent notes about the player's state (e.g., "covered in poop", "smells like lavender") to ensure narrative continuity.
+- **Interactive NPCs**: NPCs can respond to player input using AI-driven dialogue systems.
+- **Dynamic Room Details**: Permanent narrative details added by the LLM (e.g., "stinky air") are visible in the TUI Room pane.
 - **Flexible Game Logic**: Core mechanics like movement, item usage, and NPC interactions are implemented with extensibility in mind.
-- **Text-Based UI**: Includes a terminal-based user interface for manual play.
+- **Text-Based UI**: Includes a terminal-based user interface with dedicated panes for narration, room info, inventory, and maps.
 - **Integration with OpenAI**: Supports OpenAI's API for generating narratives and handling tool calls.
 
 ## TODO:
 
-- [ ] Implement NPC interactions and dialogue.
 - [ ] Add more complex puzzles and item interactions.
-- [ ] Enhance the TUI with better formatting and user feedback.
-- [ ] Implement a save/load system for game progress.
-- [ ] Add more tools for AI to interact with the game state.
+- [x] Enhance the TUI with better formatting and user feedback.
+- [x] Add more tools for AI to interact with the game state.
 - [ ] Write comprehensive tests for game mechanics and AI integration.
 - [ ] Add more npcs and room types to create a richer game world.
-- [ ] Allow the LLM to generate new rooms, items, and NPCs dynamically as the player explores.
 
 ## Project Structure
 
@@ -27,14 +26,19 @@ LLM Adventure is a text-based adventure game framework that leverages language m
 llm_adventure/
 ├── adventure/          # Core game logic
 │   ├── adventure.go    # Main game mechanics
+│   ├── client.go       # Defines the LLMClient interface
 │   ├── executor.go     # Tool execution logic
 │   ├── quickmatch.go   # Quick command parsing
 │   ├── rooms.go        # Room and door definitions
 │   ├── runner.go       # Interactive game loop
+│   ├── save_load.go    # JSON serialization for game state
 │   ├── tools.go        # Tool definitions for AI integration
 │   ├── tui.go          # Text-based user interface
 │   ├── tui_llm.go      # TUI with LLM integration
-├── main.go             # Entry point for the game
+├── cmd/
+│   └── llm_adventure/
+│       └── main.go     # Entry point for the game
+├── Makefile            # Build and Run scripts
 ├── go.mod              # Go module definition
 ├── LICENSE             # License file
 ```
@@ -61,23 +65,43 @@ llm_adventure/
 
 ### Running the Game
 
-To start the game, run:
+The project includes a `Makefile` for convenience. You can build and run the game directly using `make` commands.
+
+To build the executable:
 ```bash
-go run main.go
+make build
+```
+
+To run the game with the TUI (default):
+```bash
+make run-tui
+```
+
+To run the alternative simple interactive mode:
+```bash
+make run-interactive
 ```
 
 ### Configuration
 
-You can configure the game by modifying the `Game` struct in `adventure/adventure.go`. For example, you can inject custom AI functions for generating room descriptions and NPC dialogues.
+You can configure the game's LLM connection through command-line flags when running `main.go`.
+Example:
+```bash
+go run cmd/llm_adventure/main.go -base-url="http://localhost:11434/v1" -model="granite4" tui-llm
+```
+
+You can also use custom system prompts by injecting custom AI functions in `cmd/llm_adventure/main.go` for generating room descriptions and NPC dialogues.
 
 ### Example Commands
 
 - `look`: Examine the current room.
-- `move <direction>`: Move to an adjacent room.
+- `move <direction>`: Move to an adjacent room. (If no door exists, the game may dynamically generate a new area!)
 - `open <direction>`: Open a door in the specified direction.
 - `take <item>`: Pick up an item.
 - `use <item> on <target>`: Use an item on a target.
 - `inventory`: View your inventory.
+- `save`: Save the current game state.
+- `load`: Load the last saved game state.
 
 ## Development
 
@@ -97,7 +121,7 @@ You can configure the game by modifying the `Game` struct in `adventure/adventur
 
 To run tests:
 ```bash
-go test ./...
+make test
 ```
 
 ## License

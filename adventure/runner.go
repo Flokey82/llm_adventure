@@ -13,7 +13,7 @@ import (
 // RunInteractive runs an interactive loop using the provided OpenAI client and model.
 // It manages messages, tool dispatch, and user input. The function returns when the
 // user types `quit` or `exit`, or if an unrecoverable client error occurs.
-func (g *Game) RunInteractive(client *openai.Client, model string) error {
+func (g *Game) RunInteractive(client LLMClient, model string) error {
 	ctx := context.Background()
 	reader := bufio.NewReader(os.Stdin)
 
@@ -108,9 +108,10 @@ func (g *Game) RunInteractive(client *openai.Client, model string) error {
 					if idx >= 1 && idx <= len(ambiguous) {
 						sel := ambiguous[idx-1]
 						res := g.TakeItem(sel)
-						// record user + tool output
+						// Record user and result. We use 'user' role for the result
+						// to avoid protocol violations (tool role requires ID).
 						messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: userInput})
-						messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleTool, Content: res})
+						messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "ACTION RESULT: " + res})
 						fmt.Println(res)
 						break
 					}
@@ -118,8 +119,10 @@ func (g *Game) RunInteractive(client *openai.Client, model string) error {
 					for _, opt := range ambiguous {
 						if strings.EqualFold(opt, choiceRaw) {
 							res := g.TakeItem(opt)
+							// Record user and result. We use 'user' role for the result
+							// to avoid protocol violations (tool role requires ID).
 							messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: userInput})
-							messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleTool, Content: res})
+							messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "ACTION RESULT: " + res})
 							fmt.Println(res)
 							goto handledDone
 						}
@@ -129,11 +132,12 @@ func (g *Game) RunInteractive(client *openai.Client, model string) error {
 			handledDone:
 				continue
 			}
-			// not ambiguous: record the user message and the tool output so the
-			// model sees the state, then request narration from the model but
-			// do NOT provide tool definitions (we handled the action locally).
+			// not ambiguous: record the user message and the result so the
+			// model sees the state, then request narration from the model.
+			// Note: we use 'user' role for the action result to keep the
+			// protocol simple for local actions.
 			messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: userInput})
-			messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleTool, Content: out})
+			messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "ACTION RESULT: " + out})
 			fmt.Println(out)
 
 			// Advance world state for this local action and print tick events

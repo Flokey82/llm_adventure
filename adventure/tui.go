@@ -61,7 +61,7 @@ func (g *Game) RunTUI() error {
 
 	// Helper function to append user input to the narration pane
 	appendUser := func(s string) {
-		fmt.Fprintln(narration, fmt.Sprintf("[cyan]%s", tview.Escape(s)))
+		fmt.Fprintf(narration, "[cyan]%s\n", tview.Escape(s))
 		narration.ScrollToEnd()
 	}
 

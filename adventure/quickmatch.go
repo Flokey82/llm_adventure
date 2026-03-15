@@ -26,8 +26,22 @@ func (g *Game) ExecuteQuickCommand(input string) (bool, string, []string) {
 	switch s {
 	case "look", "l":
 		return true, g.Look(), nil
+	case "search":
+		return true, g.Search(), nil
 	case "inventory", "inv":
 		return true, fmt.Sprintf("Inventory: %v", g.Inventory), nil
+	case "save":
+		err := g.Save("savegame.json")
+		if err != nil {
+			return true, fmt.Sprintf("Failed to save game: %v", err), nil
+		}
+		return true, "Game saved to savegame.json", nil
+	case "load":
+		err := g.Load("savegame.json")
+		if err != nil {
+			return true, fmt.Sprintf("Failed to load game: %v", err), nil
+		}
+		return true, "Game loaded from savegame.json", nil
 	}
 
 	// Handle movement commands like "move north" or "north"

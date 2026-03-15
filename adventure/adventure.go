@@ -14,13 +14,16 @@ import (
 // Game represents the state of the game, including the player's current location,
 // inventory, rooms, NPCs, and timers for time-based events.
 type Game struct {
-	CurrentRoomID          string                                        // ID of the room the player is currently in
-	Inventory              []string                                      // List of items the player is carrying
-	Rooms                  map[string]*Room                              // Map of room IDs to Room objects
-	AI_GenerateDescription func(prompt string) string                    // Function to generate room descriptions
-	AI_CharacterChat       func(systemPrompt, userMessage string) string // Function for NPC dialogue
-	NPCs                   map[string]*NPC                               // Map of NPC IDs to NPC objects
+	CurrentRoomID          string                                // ID of the room the player is currently in
+	Inventory              []string                              // List of items the player is carrying
+	Rooms                  map[string]*Room                      // Map of room IDs to Room objects
+	AI_GenerateDescription func(prompt string) string            // Function to generate room descriptions
+	AI_GenerateRoom        func(fromRoom *Room, direction string) *Room // Function to generate new rooms
+	AI_CharacterChat       func(npc *NPC, userMessage string) string // Function for NPC structured dialogue
+	NPCs                   map[string]*NPC                       // Map of NPC IDs to NPC objects
 	Timers                 map[string]int                                // Timers for time-based events, keyed by strings
+	TimerCallbacks         map[string]func(*Game, string)                // Callbacks for timers
+	PlayerNotes            []string                              // Persistent notes about the player (e.g. "covered in poop")
 }
 
 // NPC represents a non-player character in the world.
@@ -48,10 +51,11 @@ func NewGame(seed ...int64) *Game {
 
 	// Initialize the game state
 	g := &Game{
-		CurrentRoomID: "entry_hall",
-		Rooms:         rooms,
-		NPCs:          map[string]*NPC{},
-		Timers:        map[string]int{},
+		CurrentRoomID:  "entry_hall",
+		Rooms:          rooms,
+		NPCs:           map[string]*NPC{},
+		Timers:         map[string]int{},
+		TimerCallbacks: make(map[string]func(*Game, string)),
 	}
 
 	// Add an example wandering monster (Grue) to a non-start room
@@ -76,7 +80,7 @@ func (g *Game) Tick() []string {
 		}
 		g.Timers[k] = v - 1
 		if g.Timers[k] <= 0 {
-			if callback, exists := timerCallbacks[strings.Split(k, ":")[0]]; exists {
+			if callback, exists := g.TimerCallbacks[strings.Split(k, ":")[0]]; exists {
 				callback(g, k)
 			}
 			delete(g.Timers, k)
@@ -137,6 +141,40 @@ func (g *Game) Move(direction string) string {
 	prev := g.CurrentRoomID
 	g.CurrentRoomID = otherRoom
 	return fmt.Sprintf("You moved %s from %s to %s.", direction, prev, g.CurrentRoomID)
+}
+
+// DiscoverRoom attempts to generate and connect a new room in a given direction if one does not exist.
+func (g *Game) DiscoverRoom(direction string) string {
+	room := g.Rooms[g.CurrentRoomID]
+	if door, exists := room.Doors[direction]; exists && door != nil {
+		return fmt.Sprintf("There is already a visible path to the %s.", direction)
+	}
+
+	if g.AI_GenerateRoom != nil {
+		newRoom := g.AI_GenerateRoom(room, direction)
+		if newRoom != nil {
+			g.Rooms[newRoom.ID] = newRoom
+			g.CurrentRoomID = newRoom.ID
+			return fmt.Sprintf("You discover a path to the %s and arrive at a new area... %s", direction, newRoom.BasePrompt)
+		}
+	}
+	return fmt.Sprintf("You search to the %s, but find nothing new.", direction)
+}
+
+// SpawnItem spawns a new item in the current room.
+func (g *Game) SpawnItem(itemName string, reasoning string) string {
+	room := g.Rooms[g.CurrentRoomID]
+	
+	// Normalize item name for simplicity
+	itemName = normalizeItemName(itemName)
+
+	room.Items = append(room.Items, itemName)
+	
+	logMsg := fmt.Sprintf("You discover %s. (%s)", itemName, reasoning)
+	if reasoning == "" {
+		logMsg = fmt.Sprintf("You discover %s.", itemName)
+	}
+	return logMsg
 }
 
 // OpenDoor attempts to open a door in the specified direction. Returns a message describing the result.
@@ -260,16 +298,23 @@ func (g *Game) TalkTo(npcName, message string) string {
 	if g.AI_CharacterChat == nil {
 		return "No dialogue system is available."
 	}
-	// call into the injected character chat. Use the NPC persona as system prompt.
-	resp := g.AI_CharacterChat(found.Persona, message)
-	// Optionally, we could modify disposition based on response, but keep simple.
+	// call into the injected character chat, passing the NPC directly.
+	resp := g.AI_CharacterChat(found, message)
 	return fmt.Sprintf("%s replies: %s", found.Name, resp)
 }
 
 // Helper function to generate a room narrative if not already present.
 func (g *Game) generateRoomNarrative(room *Room) string {
 	if room.Narrative == "" && g.AI_GenerateDescription != nil {
-		prompt := fmt.Sprintf("Describe a room with these properties: %s. Keep it atmospheric but concise (under 50 words).", room.BasePrompt)
+		typeInfo := ""
+		if room.RoomType != "" {
+			typeInfo = fmt.Sprintf("It is a %s. ", room.RoomType)
+		}
+		furnInfo := ""
+		if len(room.Furniture) > 0 {
+			furnInfo = fmt.Sprintf("It contains: %s. ", strings.Join(room.Furniture, ", "))
+		}
+		prompt := fmt.Sprintf("Describe a room with these properties: %s%s%s. Keep it atmospheric but concise (under 50 words).", typeInfo, furnInfo, room.BasePrompt)
 		room.Narrative = g.AI_GenerateDescription(prompt)
 		room.Visited = true
 	}
@@ -277,6 +322,31 @@ func (g *Game) generateRoomNarrative(room *Room) string {
 		return room.Narrative
 	}
 	return room.BasePrompt
+}
+
+// AddRoomDetail adds a permanent narrative detail to the current room.
+func (g *Game) AddRoomDetail(detail string) string {
+	room := g.Rooms[g.CurrentRoomID]
+	room.Details = append(room.Details, detail)
+	return fmt.Sprintf("Added room detail: %s", detail)
+}
+
+// UpdatePlayerNotes replaces the current player notes with a new list.
+func (g *Game) UpdatePlayerNotes(notes []string) string {
+	g.PlayerNotes = notes
+	return fmt.Sprintf("Updated player notes: %v", notes)
+}
+
+// Search attempts to find hidden secrets in the room.
+func (g *Game) Search() string {
+	room := g.Rooms[g.CurrentRoomID]
+	if len(room.Secrets) > 0 {
+		secrets := strings.Join(room.Secrets, " ")
+		// Remove secrets so they aren't repeatedly discovered
+		room.Secrets = nil
+		return fmt.Sprintf("You search the area and discover: %s", secrets)
+	}
+	return "You search the area, but find nothing unusual."
 }
 
 // Helper function to build door descriptions and glimpses of adjacent rooms.
@@ -289,10 +359,14 @@ func (g *Game) buildDoorDescriptions(room *Room) (map[string]string, []string) {
 			continue
 		}
 		status := "closed"
+		desc := d.Description
+		if desc == "" {
+			desc = "door"
+		}
 		if d.Open {
 			status = "open"
 			if other, _, ok := d.OtherSide(room.ID); ok {
-				doors[dir] = fmt.Sprintf("%s -> %s", status, other)
+				doors[dir] = fmt.Sprintf("open %s -> %s", desc, other)
 				if or := g.Rooms[other]; or != nil {
 					if or.Narrative != "" {
 						glimpses = append(glimpses, fmt.Sprintf("To the %s you glimpse: %s", dir, or.Narrative))
@@ -304,9 +378,9 @@ func (g *Game) buildDoorDescriptions(room *Room) (map[string]string, []string) {
 			}
 		}
 		if d.Locked {
-			doors[dir] = "locked"
+			doors[dir] = fmt.Sprintf("locked %s", desc)
 		} else {
-			doors[dir] = status
+			doors[dir] = fmt.Sprintf("%s %s", status, desc)
 		}
 	}
 	return doors, glimpses
@@ -341,7 +415,17 @@ func (g *Game) Look() string {
 	doors, glimpses := g.buildDoorDescriptions(room)
 	presentStr := g.listNPCsInRoom(room)
 
-	desc := fmt.Sprintf("CURRENT ROOM NARRATIVE: %s\nPRESENT: %s\nVISIBLE ITEMS: %v\nDOORS: %v\nGLIMPSES: %s", narrative, presentStr, room.Items, doors, strings.Join(glimpses, " "))
+	detailsStr := ""
+	if len(room.Details) > 0 {
+		detailsStr = fmt.Sprintf("\nROOM DETAILS: %s", strings.Join(room.Details, " "))
+	}
+
+	notesStr := ""
+	if len(g.PlayerNotes) > 0 {
+		notesStr = fmt.Sprintf("\nPLAYER STATE/NOTES: %s", strings.Join(g.PlayerNotes, "; "))
+	}
+
+	desc := fmt.Sprintf("CURRENT ROOM NARRATIVE: %s%s%s\nPRESENT: %s\nVISIBLE ITEMS: %v\nDOORS: %v\nGLIMPSES: %s", narrative, detailsStr, notesStr, presentStr, room.Items, doors, strings.Join(glimpses, " "))
 	return desc
 }
 
@@ -364,5 +448,4 @@ func findItem(items []string, target string) (int, string) {
 	return -1, ""
 }
 
-// timerCallbacks is a global map that associates timer keys with their respective callback functions.
-var timerCallbacks = make(map[string]func(*Game, string))
+

@@ -13,14 +13,44 @@ func Tools() []openai.Tool {
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
 				Name:        "move",
-				Description: "Move the player in a direction. Only works if door is open.",
+				Description: "Move the player in a direction. Only works if an open door exists or there is a known open path.",
 				Parameters: jsonschema.Definition{
 					Type: jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{
 						// The direction in which the player wants to move. Must be one of the specified values.
-						"direction": {Type: jsonschema.String, Enum: []string{"north", "south", "east", "west"}},
+						"direction": {Type: jsonschema.String, Enum: []string{"north", "south", "east", "west", "up", "down"}},
 					},
 					Required: []string{"direction"},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "discover_room",
+				Description: "Discover or create a new path/room in a direction. Use this when the player searches for hidden paths, forces their way through an obstacle, or investigates a direction with no visible door.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"direction": {Type: jsonschema.String, Enum: []string{"north", "south", "east", "west", "up", "down"}},
+						"reasoning": {Type: jsonschema.String, Description: "Brief explanation of why a new path makes sense here."},
+					},
+					Required: []string{"direction"},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "spawn_item",
+				Description: "Dynamically generate and place a new item in the room. Use this when the player searches a container, defeats an enemy, or if finding an item makes strong narrative sense.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"item_name": {Type: jsonschema.String, Description: "The name of the item to spawn (snake_case)."},
+						"reasoning": {Type: jsonschema.String, Description: "Brief narrative reason for finding the item."},
+					},
+					Required: []string{"item_name"},
 				},
 			},
 		},
@@ -33,7 +63,7 @@ func Tools() []openai.Tool {
 					Type: jsonschema.Object,
 					Properties: map[string]jsonschema.Definition{
 						// The direction of the door to open. Must be one of the specified values.
-						"direction": {Type: jsonschema.String, Enum: []string{"north", "south", "east", "west"}},
+						"direction": {Type: jsonschema.String, Enum: []string{"north", "south", "east", "west", "up", "down"}},
 					},
 					Required: []string{"direction"},
 				},
@@ -91,10 +121,38 @@ func Tools() []openai.Tool {
 		{
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
+				Name:        "search",
+				Description: "Search the current room for hidden secrets, passages, or concealed information.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
 				Name:        "look",
 				Description: "Get the current visual description of the room and items.",
 				Parameters: jsonschema.Definition{
 					Type: jsonschema.Object,
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "update_player_notes",
+				Description: "Update the persistent notes about the player's state (e.g. 'covered in poop'). Use this when the player's status changes in a lasting way.",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"notes": {
+							Type: jsonschema.Array,
+							Items: &jsonschema.Definition{Type: jsonschema.String},
+							Description: "The complete new list of player notes. Replaces the old list.",
+						},
+					},
+					Required: []string{"notes"},
 				},
 			},
 		},

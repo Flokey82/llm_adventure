@@ -13,7 +13,7 @@ import (
 // RunTUIWithLLM launches the Text User Interface (TUI) for the game and integrates it with the LLM.
 // This function sets up the layout, handles user input, and manages interactions between the game state and the LLM.
 // The TUI includes panels for narration, event logs, inventory, room view, and a map.
-func (g *Game) RunTUIWithLLM(client *openai.Client, model string) error {
+func (g *Game) RunTUIWithLLM(client LLMClient, model string) error {
 	app := tview.NewApplication()
 
 	// Panels
@@ -63,7 +63,9 @@ func (g *Game) RunTUIWithLLM(client *openai.Client, model string) error {
 	messages := []openai.ChatCompletionMessage{
 		{
 			Role:    openai.ChatMessageRoleSystem,
-			Content: `You are the narrator of a text adventure game. Use the 'look' tool immediately when the game starts or room changes. Rely on tool outputs for state. Do not invent items or exits. Describe scene atmospherically. Call tools rather than saying you did something.`,
+			Content: `You are the narrator of a text adventure game. Use the 'look' tool immediately when the game starts or room changes. Rely on tool outputs for state. Do not invent items or exits. Describe scene atmospherically. Call tools rather than saying you did something.
+			
+Keep persistent notes about the player using update_player_notes (e.g. if they are covered in poop, smelling of lavender, or have a specific injury). These notes will be visible to you in the Look tool output.`,
 		},
 		{Role: openai.ChatMessageRoleUser, Content: "Start the game. Look around."},
 	}
@@ -81,20 +83,24 @@ func (g *Game) RunTUIWithLLM(client *openai.Client, model string) error {
 				continue
 			}
 			status := "closed"
+			desc := d.Description
+			if desc == "" {
+				desc = "door"
+			}
 			if d.Open {
 				status = "open"
 			}
 			// Reveal destination only when open
 			if d.Open {
 				if other, _, ok := d.OtherSide(g.CurrentRoomID); ok {
-					doors[dir] = fmt.Sprintf("%s -> %s", status, other)
+					doors[dir] = fmt.Sprintf("open %s -> %s", desc, other)
 					continue
 				}
 			}
 			if d.Locked {
-				doors[dir] = "locked"
+				doors[dir] = fmt.Sprintf("locked %s", desc)
 			} else {
-				doors[dir] = status
+				doors[dir] = fmt.Sprintf("%s %s", status, desc)
 			}
 		}
 		// Show generated narrative if available, otherwise fall back to base prompt
@@ -102,7 +108,13 @@ func (g *Game) RunTUIWithLLM(client *openai.Client, model string) error {
 		if narrative == "" {
 			narrative = room.BasePrompt
 		}
-		fmt.Fprintf(roomView, "[yellow]%s\n\n[white]Items: %s\nDoors: %s", narrative, tview.Escape(fmt.Sprintf("%v", room.Items)), tview.Escape(fmt.Sprintf("%v", doors)))
+		
+		details := ""
+		if len(room.Details) > 0 {
+			details = "\n" + strings.Join(room.Details, " ")
+		}
+
+		fmt.Fprintf(roomView, "[yellow]%s%s\n\n[white]Items: %s\nDoors: %s", narrative, details, tview.Escape(fmt.Sprintf("%v", room.Items)), tview.Escape(fmt.Sprintf("%v", doors)))
 
 		// Update the inventory view
 		invView.Clear()
@@ -110,11 +122,15 @@ func (g *Game) RunTUIWithLLM(client *openai.Client, model string) error {
 
 		// Update the map view with a small ASCII thumbnail using room coordinates
 		mapView.Clear()
+		fmt.Fprintf(mapView, "Z-Level: %d\n", room.Z)
 		// Build position map and bounds
 		pos := map[string]*Room{}
 		minX, maxX, minY, maxY := 0, 0, 0, 0
 		first := true
 		for _, r := range g.Rooms {
+			if r.Z != room.Z {
+				continue
+			}
 			key := fmt.Sprintf("%d,%d", r.X, r.Y)
 			pos[key] = r
 			if first {
@@ -171,7 +187,7 @@ func (g *Game) RunTUIWithLLM(client *openai.Client, model string) error {
 	}
 	appendUser := func(s string) {
 		// Show user input in a distinct color, but escape text to avoid markup
-		fmt.Fprintln(narration, fmt.Sprintf("[cyan]%s", tview.Escape(s)))
+		fmt.Fprintf(narration, "[cyan]%s\n", tview.Escape(s))
 		narration.ScrollToEnd()
 	}
 	appendEvent := func(s string) {
@@ -238,6 +254,15 @@ func (g *Game) RunTUIWithLLM(client *openai.Client, model string) error {
 	// Run a request to the model, handle tool calls, then final narration
 	runModel := func(userInput string) {
 		processing = true
+
+		// Simple pruning to avoid unbounded context growth: keep system prompt and
+		// last N messages (here N=10).
+		if len(messages) > 12 {
+			sys := messages[0]
+			recent := messages[len(messages)-10:]
+			messages = append([]openai.ChatCompletionMessage{sys}, recent...)
+		}
+
 		// Try quick local command first to bypass LLM for clear intents
 		handled, out, ambiguous := g.ExecuteQuickCommand(userInput)
 		if handled {
@@ -247,20 +272,21 @@ func (g *Game) RunTUIWithLLM(client *openai.Client, model string) error {
 					appendEvent(out)
 					showChooser(ambiguous, func(opt string) {
 						res := g.TakeItem(opt)
+						// Record user and result. We use 'user' role for the result
+						// to avoid protocol violations (tool role requires ID).
 						messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: userInput})
-						messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleTool, Content: res})
+						messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "ACTION RESULT: " + res})
 						app.QueueUpdateDraw(func() { appendNarration(res); updateViews() })
 					})
 				})
 				processing = false
 				return
 			}
-			// Not ambiguous: record user and tool output so the model sees state
-			// then ask the model to generate narration — do NOT provide tool
-			// definitions in this request (we already handled the action
-			// locally via quickmatch).
+			// Not ambiguous: record user and result so the model sees state,
+			// then ask the model to generate narration. Note: we use 'user' role
+			// for the action result to keep the protocol simple for local actions.
 			messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: userInput})
-			messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleTool, Content: out})
+			messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "ACTION RESULT: " + out})
 
 			// Advance world state (tick) after the player's quick action
 			g.Tick()
