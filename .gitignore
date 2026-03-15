@@ -1,6 +1,6 @@
 # Binaries
-llm_adventure
-test_bin
+/llm_adventure
+/test_bin
 
 # Go artifacts
 *.out
