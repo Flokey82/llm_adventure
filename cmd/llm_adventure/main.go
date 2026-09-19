@@ -24,7 +24,7 @@ func main() {
 	flag.StringVar(&dmConfigPath, "dm-config", "", "Path to custom Dungeon Master JSON config to load")
 	flag.StringVar(&loadSavePath, "load", "", "Path to saved world state JSON file to restore on start")
 	flag.StringVar(&baseURL, "base-url", "http://192.168.86.208:8000/api/v1", "Base URL for the OpenAI API")
-	flag.StringVar(&model, "model", "gemma-4-26B-A4B-it-qat-q4_0-gguf-Q4_0", "LLM model to use for narration and dialogue")
+	flag.StringVar(&model, "model", "Gemma-4-26B-A4B-it-MTP-GGUF", "LLM model to use for narration and dialogue")
 	flag.StringVar(&toolModel, "tool-model", "granite-4.0-h-tiny-GGUF", "Fast LLM model to use for reflex tool calling")
 	flag.StringVar(&roomPrompt, "room-prompt", "You are a dark fantasy writer. Generate a static room description based on the provided tags. Keep it concise and atmospheric.", "System prompt for room generation")
 	flag.Parse()
