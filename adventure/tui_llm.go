@@ -79,115 +79,8 @@ NPCs & COMBAT:
 		{Role: openai.ChatMessageRoleUser, Content: "Start the game. Look around."},
 	}
 
-	// Helper function to update static views
 	updateViews := func() {
-		// Update the room view with the current room's narrative, items, and doors
-		room := g.Rooms[g.CurrentRoomID]
-		roomView.Clear()
-		// Build readable doors info
-		doors := map[string]string{}
-		for dir, d := range room.Doors {
-			if d == nil {
-				doors[dir] = "(missing)"
-				continue
-			}
-			status := "closed"
-			desc := d.Description
-			if desc == "" {
-				desc = "door"
-			}
-			if d.Open {
-				status = "open"
-			}
-			// Reveal destination only when open
-			if d.Open {
-				if other, _, ok := d.OtherSide(g.CurrentRoomID); ok {
-					doors[dir] = fmt.Sprintf("open %s -> %s", desc, other)
-					continue
-				}
-			}
-			if d.Locked {
-				doors[dir] = fmt.Sprintf("locked %s", desc)
-			} else {
-				doors[dir] = fmt.Sprintf("%s %s", status, desc)
-			}
-		}
-		// Show generated narrative if available, otherwise fall back to base prompt
-		narrative := room.Narrative
-		if narrative == "" {
-			narrative = room.BasePrompt
-		}
-		
-		details := ""
-		if len(room.Details) > 0 {
-			details = "\n" + strings.Join(room.Details, " ")
-		}
-
-		fmt.Fprintf(roomView, "[yellow]%s%s\n\n[white]Items: %s\nDoors: %s", narrative, details, tview.Escape(fmt.Sprintf("%v", room.Items)), tview.Escape(fmt.Sprintf("%v", doors)))
-
-		// Update the inventory view
-		invView.Clear()
-		fmt.Fprintf(invView, "%s", tview.Escape(fmt.Sprintf("%v", g.Inventory)))
-
-		// Update the map view with a small ASCII thumbnail using room coordinates
-		mapView.Clear()
-		fmt.Fprintf(mapView, "Z-Level: %d\n", room.Z)
-		// Build position map and bounds
-		pos := map[string]*Room{}
-		minX, maxX, minY, maxY := 0, 0, 0, 0
-		first := true
-		for _, r := range g.Rooms {
-			if r.Z != room.Z {
-				continue
-			}
-			key := fmt.Sprintf("%d,%d", r.X, r.Y)
-			pos[key] = r
-			if first {
-				minX, maxX, minY, maxY = r.X, r.X, r.Y, r.Y
-				first = false
-				continue
-			}
-			if r.X < minX {
-				minX = r.X
-			}
-			if r.X > maxX {
-				maxX = r.X
-			}
-			if r.Y < minY {
-				minY = r.Y
-			}
-			if r.Y > maxY {
-				maxY = r.Y
-			}
-		}
-		// Draw rows (y increases downward) and highlight rooms with NPCs
-		hasNPC := func(roomID string) bool {
-			for _, n := range g.NPCs {
-				if n.Location == roomID {
-					return true
-				}
-			}
-			return false
-		}
-		for y := minY; y <= maxY; y++ {
-			line := ""
-			for x := minX; x <= maxX; x++ {
-				key := fmt.Sprintf("%d,%d", x, y)
-				if r, ok := pos[key]; ok {
-					if r.ID == g.CurrentRoomID {
-						line += "[green]*[-]"
-					} else if hasNPC(r.ID) {
-						line += "[red]M[-]"
-					} else {
-						line += "[white]o[-]"
-					}
-				} else {
-					line += " "
-				}
-				line += " "
-			}
-			fmt.Fprintln(mapView, line)
-		}
+		renderTUIViews(g, roomView, invView, mapView)
 	}
 
 	appendNarration := func(s string) {
@@ -418,4 +311,214 @@ NPCs & COMBAT:
 		return err
 	}
 	return nil
+}
+
+// RunTUIWithDM runs the game TUI powered by the autonomous Animus Dungeon Master agent.
+func (g *Game) RunTUIWithDM(dm *DungeonMaster) error {
+	app := tview.NewApplication()
+
+	// Panels
+	narration := tview.NewTextView()
+	narration.SetDynamicColors(true)
+	narration.SetBorder(true).SetTitle("Dungeon Master Narration (Animus)")
+
+	eventLog := tview.NewTextView()
+	eventLog.SetBorder(true).SetTitle("World Events")
+
+	roomView := tview.NewTextView()
+	roomView.SetDynamicColors(true)
+	roomView.SetBorder(true).SetTitle("Room")
+
+	invView := tview.NewTextView()
+	invView.SetBorder(true).SetTitle("Inventory")
+
+	mapView := tview.NewTextView()
+	mapView.SetDynamicColors(true)
+	mapView.SetBorder(true).SetTitle("Map")
+
+	helpView := tview.NewTextView()
+	helpView.SetBorder(true).SetTitle("Commands")
+	fmt.Fprintf(helpView, "Commands: look, search, move <dir>, take <item>, use <item>, talk to <npc>, quit")
+
+	input := tview.NewInputField().SetLabel(": ")
+
+	rightTop := tview.NewFlex().SetDirection(tview.FlexRow)
+	rightTop.AddItem(roomView, 0, 2, false)
+	rightTop.AddItem(invView, 0, 1, false)
+	rightTop.AddItem(mapView, 0, 1, false)
+	rightTop.AddItem(helpView, 3, 0, false)
+
+	left := tview.NewFlex().SetDirection(tview.FlexRow)
+	left.AddItem(narration, 0, 3, false)
+	left.AddItem(eventLog, 0, 1, false)
+
+	mainFlex := tview.NewFlex()
+	mainFlex.AddItem(left, 0, 3, false)
+	mainFlex.AddItem(rightTop, 0, 1, false)
+
+	layout := tview.NewFlex().SetDirection(tview.FlexRow)
+	layout.AddItem(mainFlex, 0, 1, false)
+	layout.AddItem(input, 1, 0, true)
+
+	updateViews := func() {
+		renderTUIViews(g, roomView, invView, mapView)
+	}
+
+	appendNarration := func(text string) {
+		fmt.Fprintf(narration, "%s\n\n", tview.Escape(text))
+		narration.ScrollToEnd()
+	}
+
+	appendEvent := func(text string) {
+		fmt.Fprintf(eventLog, "%s\n", tview.Escape(text))
+		eventLog.ScrollToEnd()
+	}
+
+	// Initial scene description
+	appendNarration("--- Animus Dungeon Master Connected ---")
+	appendNarration(g.Look())
+	updateViews()
+
+	processing := false
+
+	input.SetDoneFunc(func(key tcell.Key) {
+		if key != tcell.KeyEnter || processing {
+			return
+		}
+		cmd := strings.TrimSpace(input.GetText())
+		input.SetText("")
+		if cmd == "" {
+			return
+		}
+
+		if cmd == "quit" || cmd == "exit" {
+			app.Stop()
+			return
+		}
+
+		appendNarration("[green]=> " + cmd + "[white]")
+		processing = true
+
+		go func() {
+			reply, err := dm.Step(context.Background(), cmd)
+			app.QueueUpdateDraw(func() {
+				if err != nil {
+					appendEvent("DM error: " + err.Error())
+				} else {
+					appendNarration(reply)
+				}
+				updateViews()
+				processing = false
+			})
+		}()
+	})
+
+	return app.SetRoot(layout, true).EnableMouse(true).Run()
+}
+
+func renderTUIViews(g *Game, roomView, invView, mapView *tview.TextView) {
+	room := g.Rooms[g.CurrentRoomID]
+	roomView.Clear()
+	if room == nil {
+		return
+	}
+
+	doors := map[string]string{}
+	for dir, d := range room.Doors {
+		if d == nil {
+			doors[dir] = "(missing)"
+			continue
+		}
+		status := "closed"
+		desc := d.Description
+		if desc == "" {
+			desc = "door"
+		}
+		if d.Open {
+			status = "open"
+			if other, _, ok := d.OtherSide(g.CurrentRoomID); ok {
+				doors[dir] = fmt.Sprintf("open %s -> %s", desc, other)
+				continue
+			}
+		}
+		if d.Locked {
+			doors[dir] = fmt.Sprintf("locked %s", desc)
+		} else {
+			doors[dir] = fmt.Sprintf("%s %s", status, desc)
+		}
+	}
+
+	narrative := room.Narrative
+	if narrative == "" {
+		narrative = room.BasePrompt
+	}
+
+	details := ""
+	if len(room.Details) > 0 {
+		details = "\n" + strings.Join(room.Details, " ")
+	}
+
+	fmt.Fprintf(roomView, "[yellow]%s%s\n\n[white]Items: %s\nDoors: %s", narrative, details, tview.Escape(fmt.Sprintf("%v", room.Items)), tview.Escape(fmt.Sprintf("%v", doors)))
+
+	invView.Clear()
+	fmt.Fprintf(invView, "%s", tview.Escape(fmt.Sprintf("%v", g.Inventory)))
+
+	mapView.Clear()
+	fmt.Fprintf(mapView, "Z-Level: %d\n", room.Z)
+	pos := map[string]*Room{}
+	minX, maxX, minY, maxY := 0, 0, 0, 0
+	first := true
+	for _, r := range g.Rooms {
+		if r.Z != room.Z {
+			continue
+		}
+		key := fmt.Sprintf("%d,%d", r.X, r.Y)
+		pos[key] = r
+		if first {
+			minX, maxX, minY, maxY = r.X, r.X, r.Y, r.Y
+			first = false
+			continue
+		}
+		if r.X < minX {
+			minX = r.X
+		}
+		if r.X > maxX {
+			maxX = r.X
+		}
+		if r.Y < minY {
+			minY = r.Y
+		}
+		if r.Y > maxY {
+			maxY = r.Y
+		}
+	}
+
+	hasNPC := func(roomID string) bool {
+		for _, n := range g.NPCs {
+			if n.Location == roomID {
+				return true
+			}
+		}
+		return false
+	}
+
+	for y := minY; y <= maxY; y++ {
+		line := ""
+		for x := minX; x <= maxX; x++ {
+			key := fmt.Sprintf("%d,%d", x, y)
+			if r, ok := pos[key]; ok {
+				if r.ID == g.CurrentRoomID {
+					line += "[green]*[-]"
+				} else if hasNPC(r.ID) {
+					line += "[red]M[-]"
+				} else {
+					line += "[white]o[-]"
+				}
+			} else {
+				line += " "
+			}
+			line += " "
+		}
+		fmt.Fprintln(mapView, line)
+	}
 }

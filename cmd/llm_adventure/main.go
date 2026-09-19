@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/Flokey82/llm_adventure/adventure"
+	animusLLM "github.com/Flokey82/animus/pkg/llm"
 	"github.com/sashabaranov/go-openai"
 )
 
@@ -17,6 +18,7 @@ const (
 
 func main() {
 	var baseURL, model, roomPrompt string
+	useAnimusDM := flag.Bool("dm", true, "Use autonomous Animus Dungeon Master agent")
 	flag.StringVar(&baseURL, "base-url", "http://192.168.86.208:8000/api/v1", "Base URL for the OpenAI API")
 	flag.StringVar(&model, "model", "granite-4.0-h-tiny-GGUF", "LLM model to use")
 	flag.StringVar(&roomPrompt, "room-prompt", "You are a dark fantasy writer. Generate a static room description based on the provided tags. Keep it concise and atmospheric.", "System prompt for room generation")
@@ -197,8 +199,19 @@ You must explicitly respond in valid JSON format only, matching this structure:
 
 	switch mode {
 	case ModeTUILLM:
-		if err := game.RunTUIWithLLM(client, model); err != nil {
-			fmt.Printf("tui-llm error: %v\n", err)
+		if *useAnimusDM {
+			dm := adventure.NewDungeonMaster(game, animusLLM.Config{
+				BaseURL:   baseURL,
+				Model:     model,
+				ToolModel: "granite-4.0-h-tiny-GGUF",
+			})
+			if err := game.RunTUIWithDM(dm); err != nil {
+				fmt.Printf("tui-dm error: %v\n", err)
+			}
+		} else {
+			if err := game.RunTUIWithLLM(client, model); err != nil {
+				fmt.Printf("tui-llm error: %v\n", err)
+			}
 		}
 	case ModeInteractive:
 		if err := game.RunInteractive(client, model); err != nil {
