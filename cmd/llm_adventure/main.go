@@ -18,13 +18,14 @@ const (
 )
 
 func main() {
-	var baseURL, model, roomPrompt, dmConfigPath, loadSavePath string
+	var baseURL, model, toolModel, roomPrompt, dmConfigPath, loadSavePath string
 	useAnimusDM := flag.Bool("dm", true, "Use autonomous Animus Dungeon Master agent")
 	dmRandom := flag.Bool("dm-random", false, "Randomize Dungeon Master persona and narrative style")
 	flag.StringVar(&dmConfigPath, "dm-config", "", "Path to custom Dungeon Master JSON config to load")
 	flag.StringVar(&loadSavePath, "load", "", "Path to saved world state JSON file to restore on start")
 	flag.StringVar(&baseURL, "base-url", "http://192.168.86.208:8000/api/v1", "Base URL for the OpenAI API")
-	flag.StringVar(&model, "model", "granite-4.0-h-tiny-GGUF", "LLM model to use")
+	flag.StringVar(&model, "model", "gemma-4-26B-A4B-it-qat-q4_0-gguf-Q4_0", "LLM model to use for narration and dialogue")
+	flag.StringVar(&toolModel, "tool-model", "granite-4.0-h-tiny-GGUF", "Fast LLM model to use for reflex tool calling")
 	flag.StringVar(&roomPrompt, "room-prompt", "You are a dark fantasy writer. Generate a static room description based on the provided tags. Keep it concise and atmospheric.", "System prompt for room generation")
 	flag.Parse()
 
@@ -226,7 +227,7 @@ You must explicitly respond in valid JSON format only, matching this structure:
 			dm := adventure.NewDungeonMaster(game, animusLLM.Config{
 				BaseURL:   baseURL,
 				Model:     model,
-				ToolModel: "granite-4.0-h-tiny-GGUF",
+				ToolModel: toolModel,
 			}, dmCfg)
 
 			if loadSavePath != "" {
