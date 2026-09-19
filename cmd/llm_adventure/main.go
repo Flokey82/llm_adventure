@@ -17,8 +17,8 @@ const (
 
 func main() {
 	var baseURL, model, roomPrompt string
-	flag.StringVar(&baseURL, "base-url", "http://localhost:11434/v1", "Base URL for the OpenAI API")
-	flag.StringVar(&model, "model", "granite4", "LLM model to use")
+	flag.StringVar(&baseURL, "base-url", "http://192.168.86.208:8000/api/v1", "Base URL for the OpenAI API")
+	flag.StringVar(&model, "model", "granite-4.0-h-tiny-GGUF", "LLM model to use")
 	flag.StringVar(&roomPrompt, "room-prompt", "You are a dark fantasy writer. Generate a static room description based on the provided tags. Keep it concise and atmospheric.", "System prompt for room generation")
 	flag.Parse()
 
