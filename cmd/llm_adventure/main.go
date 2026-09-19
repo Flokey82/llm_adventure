@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"time"
 
 	"github.com/Flokey82/llm_adventure/adventure"
 	animusLLM "github.com/Flokey82/animus/pkg/llm"
@@ -17,8 +18,11 @@ const (
 )
 
 func main() {
-	var baseURL, model, roomPrompt string
+	var baseURL, model, roomPrompt, dmConfigPath, loadSavePath string
 	useAnimusDM := flag.Bool("dm", true, "Use autonomous Animus Dungeon Master agent")
+	dmRandom := flag.Bool("dm-random", false, "Randomize Dungeon Master persona and narrative style")
+	flag.StringVar(&dmConfigPath, "dm-config", "", "Path to custom Dungeon Master JSON config to load")
+	flag.StringVar(&loadSavePath, "load", "", "Path to saved world state JSON file to restore on start")
 	flag.StringVar(&baseURL, "base-url", "http://192.168.86.208:8000/api/v1", "Base URL for the OpenAI API")
 	flag.StringVar(&model, "model", "granite-4.0-h-tiny-GGUF", "LLM model to use")
 	flag.StringVar(&roomPrompt, "room-prompt", "You are a dark fantasy writer. Generate a static room description based on the provided tags. Keep it concise and atmospheric.", "System prompt for room generation")
@@ -200,11 +204,39 @@ You must explicitly respond in valid JSON format only, matching this structure:
 	switch mode {
 	case ModeTUILLM:
 		if *useAnimusDM {
+			var dmCfg adventure.DMConfig
+			if dmConfigPath != "" {
+				loadedCfg, err := adventure.LoadDMConfig(dmConfigPath)
+				if err != nil {
+					fmt.Printf("Warning: failed to load DM config from %s: %v\n", dmConfigPath, err)
+					if *dmRandom {
+						dmCfg = adventure.GenerateRandomDMConfig(time.Now().UnixNano())
+					} else {
+						dmCfg = adventure.DefaultDMConfig()
+					}
+				} else {
+					dmCfg = *loadedCfg
+				}
+			} else if *dmRandom {
+				dmCfg = adventure.GenerateRandomDMConfig(time.Now().UnixNano())
+			} else {
+				dmCfg = adventure.DefaultDMConfig()
+			}
+
 			dm := adventure.NewDungeonMaster(game, animusLLM.Config{
 				BaseURL:   baseURL,
 				Model:     model,
 				ToolModel: "granite-4.0-h-tiny-GGUF",
-			})
+			}, dmCfg)
+
+			if loadSavePath != "" {
+				if err := adventure.LoadWorld(loadSavePath, game, dm); err != nil {
+					fmt.Printf("Warning: failed to load world save from %s: %v\n", loadSavePath, err)
+				} else {
+					fmt.Printf("Restored world save from %s\n", loadSavePath)
+				}
+			}
+
 			if err := game.RunTUIWithDM(dm); err != nil {
 				fmt.Printf("tui-dm error: %v\n", err)
 			}

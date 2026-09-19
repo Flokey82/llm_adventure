@@ -375,7 +375,8 @@ func (g *Game) RunTUIWithDM(dm *DungeonMaster) error {
 	}
 
 	// Initial scene description
-	appendNarration("--- Animus Dungeon Master Connected ---")
+	appendNarration(fmt.Sprintf("--- Animus Dungeon Master: %s (%s) Connected ---", dm.Config.Name, dm.Config.Title))
+	appendNarration("[yellow]Commands: Type any action, or '/save [name]', '/load [name]', 'quit'[white]")
 	appendNarration(g.Look())
 	updateViews()
 
@@ -391,8 +392,46 @@ func (g *Game) RunTUIWithDM(dm *DungeonMaster) error {
 			return
 		}
 
-		if cmd == "quit" || cmd == "exit" {
+		lowerCmd := strings.ToLower(cmd)
+		if lowerCmd == "quit" || lowerCmd == "exit" {
 			app.Stop()
+			return
+		}
+
+		if strings.HasPrefix(lowerCmd, "/save") || strings.HasPrefix(lowerCmd, "save ") || lowerCmd == "save" {
+			parts := strings.Fields(cmd)
+			saveFile := "saves/quicksave.json"
+			if len(parts) > 1 {
+				saveFile = parts[1]
+				if !strings.Contains(saveFile, "/") {
+					saveFile = "saves/" + saveFile
+				}
+			}
+			if err := SaveWorld(saveFile, g, dm); err != nil {
+				appendEvent("[error] Save failed: " + err.Error())
+			} else {
+				appendEvent("[system] World state and DM memory saved to " + saveFile)
+			}
+			return
+		}
+
+		if strings.HasPrefix(lowerCmd, "/load") || strings.HasPrefix(lowerCmd, "load ") || lowerCmd == "load" {
+			parts := strings.Fields(cmd)
+			loadFile := "saves/quicksave.json"
+			if len(parts) > 1 {
+				loadFile = parts[1]
+				if !strings.Contains(loadFile, "/") {
+					loadFile = "saves/" + loadFile
+				}
+			}
+			if err := LoadWorld(loadFile, g, dm); err != nil {
+				appendEvent("[error] Load failed: " + err.Error())
+			} else {
+				appendEvent("[system] World state and DM memory restored from " + loadFile)
+				appendNarration(fmt.Sprintf("[yellow]--- World Restored: %s (%s) ---[white]", dm.Config.Name, dm.Config.Title))
+				appendNarration(g.Look())
+				updateViews()
+			}
 			return
 		}
 

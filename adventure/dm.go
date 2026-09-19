@@ -8,42 +8,45 @@ import (
 	"github.com/Flokey82/animus/pkg/engine"
 	"github.com/Flokey82/animus/pkg/llm"
 	"github.com/Flokey82/animus/pkg/tools"
-	"github.com/Flokey82/animus/pkg/traits"
 	"github.com/sashabaranov/go-openai"
 )
 
 // DungeonMaster is an autonomous Animus cognitive agent that runs the text adventure world.
 type DungeonMaster struct {
-	Game  *Game
-	Agent *engine.Agent
+	Game   *Game
+	Agent  *engine.Agent
+	Config DMConfig
 }
 
 // NewDungeonMaster creates a Dungeon Master agent wired to the game instance.
-func NewDungeonMaster(g *Game, llmCfg llm.Config) *DungeonMaster {
-	dmAgent := engine.NewAgent(engine.AgentConfig{
-		Name: "Dungeon Master",
-		BaseIdentity: `You are the dark fantasy Dungeon Master governing this text adventure.
+func NewDungeonMaster(g *Game, llmCfg llm.Config, customCfg ...DMConfig) *DungeonMaster {
+	dmCfg := DefaultDMConfig()
+	if len(customCfg) > 0 && customCfg[0].Name != "" {
+		dmCfg = customCfg[0]
+	}
+
+	identity := fmt.Sprintf(`You are %s, %s.
+%s
 Your role:
 1. Impartially interpret player intents and run world actions (move, discover_room, spawn_item, open_door, attack, etc.).
 2. Deliver vivid, atmospheric, present-tense, second-person narration ("You step into...").
-3. Keep narrations concise (2-4 sentences). Do not break character or mention game engine internals.`,
-		Personality: traits.OCEAN{
-			Openness:          90.0, // Highly imaginative & creative
-			Conscientiousness: 85.0, // Methodical rule enforcement
-			Extraversion:      50.0,
-			Agreeableness:     60.0, // Fair and impartial
-			Neuroticism:       20.0, // Calm & composed
-		},
-		LLMConfig: llmCfg,
+3. Keep narrations concise (2-4 sentences). Do not break character or mention game engine internals.`, dmCfg.Name, dmCfg.Title, dmCfg.NarrationStyle)
+
+	dmAgent := engine.NewAgent(engine.AgentConfig{
+		Name:         dmCfg.Name,
+		BaseIdentity: identity,
+		Personality:  dmCfg.Personality,
+		LLMConfig:    llmCfg,
 	})
 
 	dm := &DungeonMaster{
-		Game:  g,
-		Agent: dmAgent,
+		Game:   g,
+		Agent:  dmAgent,
+		Config: dmCfg,
 	}
 
 	// Seed DM world memory
-	dm.Agent.Memory.Add("A treacherous underground dungeon holds lost relics and sleeping perils.", "core", 10.0, "lore", "dungeon")
+	dm.Agent.Memory.Add(fmt.Sprintf("A treacherous underground dungeon governed by %s holds lost relics and sleeping perils.", dmCfg.Name), "core", 10.0, "lore", "dungeon")
 
 	// Dynamic tool provider based on current room context
 	dm.Agent.ContextualTagsProvider = func() []string {
