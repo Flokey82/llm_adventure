@@ -24,10 +24,15 @@ func main() {
 	flag.StringVar(&dmConfigPath, "dm-config", "", "Path to custom Dungeon Master JSON config to load")
 	flag.StringVar(&loadSavePath, "load", "", "Path to saved world state JSON file to restore on start")
 	flag.StringVar(&baseURL, "base-url", "http://192.168.86.208:8000/api/v1", "Base URL for the OpenAI API")
-	flag.StringVar(&model, "model", "Gemma-4-26B-A4B-it-MTP-GGUF", "LLM model to use for narration and dialogue")
-	flag.StringVar(&toolModel, "tool-model", "granite-4.0-h-tiny-GGUF", "Fast LLM model to use for reflex tool calling")
+	flag.StringVar(&model, "model", "gemma-4-26B-A4B-it-qat-q4_0-gguf-Q4_0", "LLM model for narration and dialogue")
+	flag.StringVar(&model, "narration-model", "gemma-4-26B-A4B-it-qat-q4_0-gguf-Q4_0", "LLM model for narration and dialogue (alias for -model)")
+	flag.StringVar(&toolModel, "tool-model", "granite-4.0-h-tiny-GGUF", "LLM model for tool calling and fast JSON extraction")
 	flag.StringVar(&roomPrompt, "room-prompt", "You are a dark fantasy writer. Generate a static room description based on the provided tags. Keep it concise and atmospheric.", "System prompt for room generation")
 	flag.Parse()
+
+	if toolModel == "" {
+		toolModel = model
+	}
 
 	// Configure for Lemonade Server
 	config := openai.DefaultConfig("sk-no-key-required")
@@ -52,7 +57,7 @@ Return a JSON object describing a new room. Structure:
 		userMsg := fmt.Sprintf("The player is in '%s' and moved '%s' into the unknown. Generate what they find.", fromRoom.ID, direction)
 
 		resp, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{
-			Model: model,
+			Model: toolModel,
 			Messages: []openai.ChatCompletionMessage{
 				{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
 				{Role: openai.ChatMessageRoleUser, Content: userMsg},
