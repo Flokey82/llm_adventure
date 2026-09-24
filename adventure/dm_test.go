@@ -51,3 +51,39 @@ func TestDungeonMasterCreationAndStep(t *testing.T) {
 		t.Errorf("expected player action 'look' logged in DM episodic memory: %s", logs)
 	}
 }
+
+func TestDualModelFastPathAndDistilledPrompt(t *testing.T) {
+	game := NewGame()
+	game.Inventory = append(game.Inventory, "iron_torch")
+
+	dm := NewDungeonMaster(game, llm.Config{
+		Model:     "Gemma-4-26B-A4B-it-MTP-GGUF",
+		ToolModel: "granite-4.0-h-tiny-GGUF",
+		MockMode:  true,
+	})
+
+	if !dm.isDualModel() {
+		t.Errorf("expected isDualModel() to be true when ToolModel != Model")
+	}
+
+	ctx := context.Background()
+
+	// Fast-path test: "inventory" should return instantly with no LLM overhead
+	invOut, err := dm.Step(ctx, "inventory")
+	if err != nil {
+		t.Fatalf("unexpected error on inventory quick command: %v", err)
+	}
+	if !strings.Contains(invOut, "iron_torch") {
+		t.Errorf("expected inventory to list iron_torch, got: %s", invOut)
+	}
+
+	// Distilled prompt test: ensure concise prompt size
+	prompt := dm.buildDistilledNarrationPrompt("take rusty key", "You picked up the rusty key.")
+	if len(prompt) != 2 {
+		t.Fatalf("expected 2 messages in distilled prompt, got %d", len(prompt))
+	}
+	totalChars := len(prompt[0].Content) + len(prompt[1].Content)
+	if totalChars > 500 {
+		t.Errorf("distilled prompt is too long (%d chars), should be concise", totalChars)
+	}
+}

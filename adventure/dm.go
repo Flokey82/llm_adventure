@@ -66,6 +66,82 @@ func (dm *DungeonMaster) RefreshTools() {
 	}
 }
 
+// isDualModel reports whether a separate fast tool model is configured alongside the creative primary model.
+func (dm *DungeonMaster) isDualModel() bool {
+	cfg := dm.Agent.LLMClient.Config()
+	return cfg.ToolModel != "" && cfg.ToolModel != cfg.Model
+}
+
+// buildDistilledNarrationPrompt creates a compact, focused creative writing prompt (~80-120 tokens)
+// instead of pumping thousands of tokens of internal cognitive state, traits, and drives to the large model.
+func (dm *DungeonMaster) buildDistilledNarrationPrompt(playerAction, outcome string) []openai.ChatCompletionMessage {
+	room := dm.Game.Rooms[dm.Game.CurrentRoomID]
+	roomInfo := dm.Game.CurrentRoomID
+	if room != nil {
+		roomType := room.RoomType
+		if roomType == "" {
+			roomType = room.ID
+		}
+		if room.BasePrompt != "" {
+			roomInfo = fmt.Sprintf("%s (%s)", roomType, room.BasePrompt)
+		} else {
+			roomInfo = roomType
+		}
+	}
+
+	sysPrompt := fmt.Sprintf("You are %s, the Dungeon Master (%s style).\nDeliver vivid, 1-2 sentence atmospheric second-person narration (\"You...\"). Keep it concise. Do not break character.",
+		dm.Config.Name, dm.Config.Archetype)
+
+	userPrompt := fmt.Sprintf("Location: %s\nPlayer Action: %q\nOutcome: %s\nTask: Narrate the atmospheric consequence in 1-2 sentences.",
+		roomInfo, playerAction, outcome)
+
+	return []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: sysPrompt},
+		{Role: openai.ChatMessageRoleUser, Content: userPrompt},
+	}
+}
+
+// narrateAction generates atmospheric narration using either the large creative model or fast tool model.
+func (dm *DungeonMaster) narrateAction(ctx context.Context, playerAction, outcome string, escalateToBigModel bool) (string, error) {
+	messages := dm.buildDistilledNarrationPrompt(playerAction, outcome)
+	cfg := dm.Agent.LLMClient.Config()
+
+	var modelToUse string
+	if escalateToBigModel || !dm.isDualModel() {
+		modelToUse = cfg.Model
+	} else {
+		modelToUse = cfg.ToolModel
+	}
+
+	return dm.Agent.LLMClient.Chat(ctx, messages, llm.WithModel(modelToUse), llm.WithTemperature(dm.Config.Temperature))
+}
+
+// classifyNeedsCreative uses the small model to rapidly classify whether an ambiguous player input warrants the 26B creative model.
+func (dm *DungeonMaster) classifyNeedsCreative(ctx context.Context, playerInput string) bool {
+	words := strings.Fields(playerInput)
+	if len(words) <= 2 {
+		return false
+	}
+
+	prompt := []openai.ChatCompletionMessage{
+		{
+			Role:    openai.ChatMessageRoleSystem,
+			Content: "Classify if the player's text is creative roleplay/dialogue (YES) or a simple routine action/status check (NO). Reply with ONLY 'YES' or 'NO'.",
+		},
+		{Role: openai.ChatMessageRoleUser, Content: playerInput},
+	}
+
+	resp, err := dm.Agent.LLMClient.Chat(ctx, prompt,
+		llm.WithModel(dm.Agent.LLMClient.Config().ToolModel),
+		llm.WithMaxTokens(5),
+		llm.WithTemperature(0.0),
+	)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToUpper(resp), "YES")
+}
+
 // Step processes a player turn, executing tools or quick commands, advancing world state, and returning narration.
 func (dm *DungeonMaster) Step(ctx context.Context, playerInput string) (string, error) {
 	playerInput = strings.TrimSpace(playerInput)
@@ -73,37 +149,143 @@ func (dm *DungeonMaster) Step(ctx context.Context, playerInput string) (string, 
 		return "", nil
 	}
 
+	// Capture initial state snapshot before action
+	prevRoomID := dm.Game.CurrentRoomID
+	prevRoom := dm.Game.Rooms[prevRoomID]
+	prevRoomVisited := prevRoom != nil && prevRoom.Visited
+	prevHP := dm.Game.PlayerHP
+
 	// 1. Try quick local command first for immediate low-latency intents
 	handled, out, ambiguous := dm.Game.ExecuteQuickCommand(playerInput)
 	if handled {
 		if len(ambiguous) > 0 {
 			return out, nil // Caller handles disambiguation
 		}
-		// Advance game world tick
+
+		lowerInput := strings.ToLower(playerInput)
+
+		// Fast-path A: Purely informational or rejection outputs require ZERO LLM calls (0ms latency)
+		if lowerInput == "inventory" || lowerInput == "inv" || lowerInput == "i" ||
+			lowerInput == "save" || lowerInput == "load" ||
+			strings.HasPrefix(out, "There is no door") ||
+			strings.HasPrefix(out, "The door is closed") ||
+			strings.HasPrefix(out, "You don't see that item here") ||
+			strings.HasPrefix(out, "Failed to save") ||
+			strings.HasPrefix(out, "Failed to load") {
+			dm.Agent.Episodic.Log("player_action", fmt.Sprintf("Quick action %q -> %s", playerInput, out))
+			return out, nil
+		}
+
+		// Fast-path B: Looking at a room (narrative is already cached in g.Look())
+		if lowerInput == "look" || lowerInput == "l" {
+			dm.Game.Tick()
+			dm.Agent.Episodic.Log("player_action", fmt.Sprintf("Quick action %q -> looked around", playerInput))
+			return out, nil
+		}
+
+		// Advance world tick for state-changing quick commands (move, take, open)
 		dm.Game.Tick()
 		dm.Agent.Episodic.Log("player_action", fmt.Sprintf("Quick action %q -> %s", playerInput, out))
-
-		// Ask DM to narrate consequence of action
 		dm.RefreshTools()
-		narrationPrompt := fmt.Sprintf("The player executed: %q. Action outcome: %s. Narrate the atmospheric consequence in 1-2 sentences.", playerInput, out)
-		narration, err := dm.Agent.LLMClient.Chat(ctx, []openai.ChatCompletionMessage{
-			{Role: openai.ChatMessageRoleSystem, Content: dm.Agent.BuildSystemPrompt()},
-			{Role: openai.ChatMessageRoleUser, Content: narrationPrompt},
-		}, llm.WithTemperature(0.7))
+
+		currRoomID := dm.Game.CurrentRoomID
+		currRoom := dm.Game.Rooms[currRoomID]
+
+		// Escalation check:
+		// Did we move into an unvisited room?
+		isNewRoom := currRoomID != prevRoomID && currRoom != nil && (!prevRoomVisited && !currRoom.Visited)
+		// Did HP change?
+		hpChanged := dm.Game.PlayerHP != prevHP
+
+		escalate := isNewRoom || hpChanged
+
+		// For routine mechanical actions (e.g. picking up an item, or moving between already-visited rooms),
+		// we use the fast tool model or distilled model, avoiding heavy Gemma 26B calls unless escalated.
+		narration, err := dm.narrateAction(ctx, playerInput, out, escalate)
 		if err != nil {
 			return out, nil
 		}
 		return narration, nil
 	}
 
-	// 2. Full agentic turn with contextual tool calling
+	// 2. Complex or agentic turn with tool calling
 	dm.RefreshTools()
-	narration, err := dm.Agent.Chat(ctx, playerInput, "Player")
+
+	// Query tool model using a lean prompt (no massive system prompt overhead)
+	leanSystemPrompt := fmt.Sprintf("You are the world engine for %s. Execute appropriate tools (move, open_door, take_item, attack, talk_to, search, etc.) for the player's action. If no tool fits, answer concisely.", dm.Config.Name)
+
+	var tags []string
+	if dm.Agent.ContextualTagsProvider != nil {
+		tags = dm.Agent.ContextualTagsProvider()
+	}
+	availableTools := dm.Agent.Tools.FilterByTags(tags...)
+
+	toolMessages := []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: leanSystemPrompt},
+		{Role: openai.ChatMessageRoleUser, Content: fmt.Sprintf("Player action in %s: %s", dm.Game.CurrentRoomID, playerInput)},
+	}
+
+	resp, err := dm.Agent.LLMClient.ChatWithTools(ctx, toolMessages, availableTools)
 	if err != nil {
 		return "", err
 	}
 
-	// Advance world tick
-	dm.Game.Tick()
-	return narration, nil
+	if len(resp.Choices) == 0 {
+		return "", fmt.Errorf("no response from world engine")
+	}
+
+	choice := resp.Choices[0]
+	hasToolCalls := len(choice.Message.ToolCalls) > 0
+
+	if hasToolCalls {
+		var toolOutputs []string
+		escalate := false
+
+		for _, tc := range choice.Message.ToolCalls {
+			fnName := tc.Function.Name
+			toolRes, execErr := dm.Agent.Tools.Execute(ctx, fnName, tc.Function.Arguments)
+			if execErr != nil {
+				toolRes = fmt.Sprintf("Tool error: %v", execErr)
+			}
+			dm.Agent.Episodic.Log("tool", fmt.Sprintf("Executed %s: %s -> %s", fnName, tc.Function.Arguments, toolRes))
+			toolOutputs = append(toolOutputs, fmt.Sprintf("%s: %s", fnName, toolRes))
+
+			// Check tool escalation triggers
+			if fnName == "talk_to" || fnName == "attack" || fnName == "resurrect" ||
+				fnName == "spawn_npc" || fnName == "discover_room" || fnName == "add_room_detail" {
+				escalate = true
+			}
+		}
+
+		dm.Game.Tick()
+
+		// State diff escalation triggers
+		currRoom := dm.Game.Rooms[dm.Game.CurrentRoomID]
+		if dm.Game.CurrentRoomID != prevRoomID && currRoom != nil && !currRoom.Visited {
+			escalate = true
+		}
+		if dm.Game.PlayerHP != prevHP {
+			escalate = true
+		}
+
+		combinedOut := strings.Join(toolOutputs, "; ")
+		narration, err := dm.narrateAction(ctx, playerInput, combinedOut, escalate)
+		if err != nil {
+			return combinedOut, nil
+		}
+		return narration, nil
+	}
+
+	// 3. No tools called: check if creative narration is needed or return fast response
+	content := choice.Message.Content
+	if dm.isDualModel() && dm.classifyNeedsCreative(ctx, playerInput) {
+		narration, err := dm.narrateAction(ctx, playerInput, "The player acts or speaks freely in the scene.", true)
+		if err == nil && narration != "" {
+			dm.Agent.Episodic.Log("chat", fmt.Sprintf("Player said: %q -> %s", playerInput, narration))
+			return narration, nil
+		}
+	}
+
+	dm.Agent.Episodic.Log("chat", fmt.Sprintf("Player said: %q -> %s", playerInput, content))
+	return content, nil
 }
