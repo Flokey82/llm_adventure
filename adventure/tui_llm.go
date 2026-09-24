@@ -237,6 +237,9 @@ NPCs & COMBAT:
 					app.QueueUpdateDraw(func() { appendEvent("[tool] " + l) })
 				}
 			}
+			if strings.TrimSpace(cleanContent) == "" {
+				cleanContent = "The action takes effect in the darkness."
+			}
 			msgN.Content = cleanContent
 			messages = append(messages, msgN)
 			app.QueueUpdateDraw(func() { appendNarration(cleanContent); updateViews() })
@@ -246,6 +249,7 @@ NPCs & COMBAT:
 
 		// Add user message
 		messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: userInput})
+		messages = sanitizeMessages(messages)
 
 		// Send request to toolModel for structured action execution
 		req := openai.ChatCompletionRequest{Model: toolModel, Messages: messages, Tools: Tools(g)}
@@ -263,6 +267,23 @@ NPCs & COMBAT:
 		}
 
 		msg := resp.Choices[0].Message
+
+		// If model emitted embedded tool calls in Content, extract them into msg.ToolCalls before processing!
+		if len(msg.ToolCalls) == 0 && msg.Content != "" {
+			cleanText, embedded := ExtractEmbeddedToolCalls(msg.Content)
+			if len(embedded) > 0 {
+				msg.ToolCalls = embedded
+				if strings.TrimSpace(cleanText) == "" {
+					cleanText = "A strange ritual power stirs."
+				}
+				msg.Content = cleanText
+			}
+		}
+
+		// Ensure assistant message is valid according to OpenAI protocol (must have Content or ToolCalls)
+		if strings.TrimSpace(msg.Content) == "" && len(msg.ToolCalls) == 0 {
+			msg.Content = "..."
+		}
 		messages = append(messages, msg)
 
 		// If model called tools, execute them and feed back outputs
@@ -294,6 +315,7 @@ NPCs & COMBAT:
 			}
 
 			// Ask model to generate narration now that tools have updated state
+			messages = sanitizeMessages(messages)
 			resp2, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{Model: modelToUse, Messages: messages})
 			if err != nil {
 				app.QueueUpdateDraw(func() { appendEvent("LLM error: " + err.Error()) })
@@ -313,6 +335,9 @@ NPCs & COMBAT:
 					app.QueueUpdateDraw(func() { appendEvent("[tool] " + l) })
 				}
 			}
+			if strings.TrimSpace(cleanContent2) == "" {
+				cleanContent2 = "The manifestation settles into the cold air."
+			}
 			msg2.Content = cleanContent2
 			messages = append(messages, msg2)
 			app.QueueUpdateDraw(func() { appendNarration(cleanContent2); updateViews() })
@@ -327,6 +352,9 @@ NPCs & COMBAT:
 			for _, l := range logs {
 				app.QueueUpdateDraw(func() { appendEvent("[tool] " + l) })
 			}
+		}
+		if strings.TrimSpace(cleanContent) == "" {
+			cleanContent = "You observe the chamber."
 		}
 		app.QueueUpdateDraw(func() { appendNarration(cleanContent); updateViews() })
 		processing = false
@@ -649,4 +677,19 @@ func classifyRequiresCreativeNarration(client LLMClient, toolModel, action, outc
 		return false
 	}
 	return strings.Contains(strings.ToUpper(resp.Choices[0].Message.Content), "YES")
+}
+
+// sanitizeMessages filters out any invalid assistant messages that lack both content and tool_calls,
+// preventing 400 Bad Request errors from strict OpenAI-compatible backends like Lemonade.
+func sanitizeMessages(msgs []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
+	var valid []openai.ChatCompletionMessage
+	for _, m := range msgs {
+		if m.Role == openai.ChatMessageRoleAssistant {
+			if strings.TrimSpace(m.Content) == "" && len(m.ToolCalls) == 0 {
+				continue
+			}
+		}
+		valid = append(valid, m)
+	}
+	return valid
 }

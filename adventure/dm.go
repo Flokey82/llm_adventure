@@ -316,5 +316,12 @@ func (dm *DungeonMaster) sanitizeAndExecuteEmbedded(raw string) string {
 		}
 		dm.RefreshTools()
 	}
+	if strings.TrimSpace(clean) == "" {
+		if len(embedded) > 0 {
+			clean = "The ritual magic takes shape before you."
+		} else {
+			clean = "You observe the area."
+		}
+	}
 	return clean
 }
