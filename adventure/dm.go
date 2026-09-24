@@ -176,10 +176,10 @@ func (dm *DungeonMaster) Step(ctx context.Context, playerInput string) (string, 
 			return out, nil
 		}
 
-		// Fast-path B: Looking at a room (narrative is already cached in g.Look())
-		if lowerInput == "look" || lowerInput == "l" {
+		// Fast-path B: Looking at a room or direction (narrative is already in out)
+		if lowerInput == "look" || lowerInput == "l" || strings.HasPrefix(lowerInput, "look ") || strings.HasPrefix(lowerInput, "peer ") || strings.HasPrefix(lowerInput, "glance ") {
 			dm.Game.Tick()
-			dm.Agent.Episodic.Log("player_action", fmt.Sprintf("Quick action %q -> looked around", playerInput))
+			dm.Agent.Episodic.Log("player_action", fmt.Sprintf("Quick action %q -> looked", playerInput))
 			return out, nil
 		}
 

@@ -247,7 +247,7 @@ You must explicitly respond in valid JSON format only, matching this structure:
 				fmt.Printf("tui-dm error: %v\n", err)
 			}
 		} else {
-			if err := game.RunTUIWithLLM(client, model); err != nil {
+			if err := game.RunTUIWithLLM(client, model, toolModel); err != nil {
 				fmt.Printf("tui-llm error: %v\n", err)
 			}
 		}

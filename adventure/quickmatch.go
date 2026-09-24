@@ -24,11 +24,11 @@ func (g *Game) ExecuteQuickCommand(input string) (bool, string, []string) {
 
 	// Handle exact simple commands like "look" or "inventory"
 	switch s {
-	case "look", "l":
+	case "look", "l", "look around", "look room":
 		return true, g.Look(), nil
 	case "search":
 		return true, g.Search(), nil
-	case "inventory", "inv":
+	case "inventory", "inv", "i":
 		return true, fmt.Sprintf("Inventory: %v", g.Inventory), nil
 	case "save":
 		err := g.Save("savegame.json")
@@ -42,6 +42,43 @@ func (g *Game) ExecuteQuickCommand(input string) (bool, string, []string) {
 			return true, fmt.Sprintf("Failed to load game: %v", err), nil
 		}
 		return true, "Game loaded from savegame.json", nil
+	}
+
+	// Handle directional look: e.g. "look east", "peer north", "look to the west"
+	lookPrefixes := []string{"look ", "peer ", "glance "}
+	for _, lp := range lookPrefixes {
+		if strings.HasPrefix(s, lp) {
+			target := strings.TrimSpace(strings.TrimPrefix(s, lp))
+			target = strings.TrimPrefix(target, "to the ")
+			target = strings.TrimPrefix(target, "to ")
+			target = strings.TrimPrefix(target, "at the ")
+			target = strings.TrimPrefix(target, "at ")
+			target = strings.TrimSpace(target)
+
+			switch target {
+			case "north", "south", "east", "west":
+				room := g.Rooms[g.CurrentRoomID]
+				if room != nil {
+					if door, exists := room.Doors[target]; exists && door != nil {
+						desc := door.Description
+						if desc == "" {
+							desc = "door"
+						}
+						if door.Open {
+							if other, _, ok := door.OtherSide(g.CurrentRoomID); ok {
+								return true, fmt.Sprintf("To the %s, an open %s leads into %s.", target, desc, other), nil
+							}
+							return true, fmt.Sprintf("To the %s, an open %s is visible.", target, desc), nil
+						}
+						if door.Locked {
+							return true, fmt.Sprintf("To the %s, a locked %s blocks passage.", target, desc), nil
+						}
+						return true, fmt.Sprintf("To the %s, a closed %s is visible.", target, desc), nil
+					}
+				}
+				return true, fmt.Sprintf("You look to the %s, but see only cold stone walls and shadowy corners.", target), nil
+			}
+		}
 	}
 
 	// Handle movement commands like "move north" or "north"

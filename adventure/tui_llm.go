@@ -13,7 +13,11 @@ import (
 // RunTUIWithLLM launches the Text User Interface (TUI) for the game and integrates it with the LLM.
 // This function sets up the layout, handles user input, and manages interactions between the game state and the LLM.
 // The TUI includes panels for narration, event logs, inventory, room view, and a map.
-func (g *Game) RunTUIWithLLM(client LLMClient, model string) error {
+func (g *Game) RunTUIWithLLM(client LLMClient, model string, toolModelOpt ...string) error {
+	toolModel := model
+	if len(toolModelOpt) > 0 && toolModelOpt[0] != "" {
+		toolModel = toolModelOpt[0]
+	}
 	app := tview.NewApplication()
 
 	// Panels
@@ -184,9 +188,26 @@ NPCs & COMBAT:
 				processing = false
 				return
 			}
+
+			// Fast-path: informational quick commands return immediately with 0ms latency
+			lowerCmd := strings.TrimSpace(strings.ToLower(userInput))
+			if lowerCmd == "inventory" || lowerCmd == "inv" || lowerCmd == "i" ||
+				lowerCmd == "look" || lowerCmd == "l" || strings.HasPrefix(lowerCmd, "look ") || strings.HasPrefix(lowerCmd, "peer ") ||
+				lowerCmd == "save" || lowerCmd == "load" ||
+				strings.HasPrefix(out, "There is no door") || strings.HasPrefix(out, "The door is closed") || strings.HasPrefix(out, "You don't see that item here") {
+				if lowerCmd == "look" || lowerCmd == "l" || strings.HasPrefix(lowerCmd, "look ") {
+					g.Tick()
+				}
+				app.QueueUpdateDraw(func() {
+					appendNarration(out)
+					updateViews()
+				})
+				processing = false
+				return
+			}
+
 			// Not ambiguous: record user and result so the model sees state,
-			// then ask the model to generate narration. Note: we use 'user' role
-			// for the action result to keep the protocol simple for local actions.
+			// then ask the model to generate narration.
 			messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: userInput})
 			messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "ACTION RESULT: " + out})
 
@@ -215,8 +236,8 @@ NPCs & COMBAT:
 		// Add user message
 		messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: userInput})
 
-		// Send request
-		req := openai.ChatCompletionRequest{Model: model, Messages: messages, Tools: Tools(g)}
+		// Send request to toolModel for structured action execution
+		req := openai.ChatCompletionRequest{Model: toolModel, Messages: messages, Tools: Tools(g)}
 		resp, err := client.CreateChatCompletion(context.Background(), req)
 		if err != nil {
 			app.QueueUpdateDraw(func() { appendEvent("LLM error: " + err.Error()) })
