@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Flokey82/animus/pkg/llm"
+	"github.com/sashabaranov/go-openai"
 )
 
 func TestDungeonMasterCreationAndStep(t *testing.T) {
@@ -85,5 +86,49 @@ func TestDualModelFastPathAndDistilledPrompt(t *testing.T) {
 	totalChars := len(prompt[0].Content) + len(prompt[1].Content)
 	if totalChars > 500 {
 		t.Errorf("distilled prompt is too long (%d chars), should be concise", totalChars)
+	}
+}
+
+func TestExtractEmbeddedToolCallsAndSpawnNPC(t *testing.T) {
+	g := NewGame()
+
+	rawContent := `With a wet, pop-like sound, a small, squat figure manifests in the center of the hall.
+
+<|tool_call>call:spawn_npc{description:<|"|>A small, squat, oily-skinned imp with protruding tusks.<|"|>,disposition:<|"|>annoyed<|"|>,hp:15,name:<|"|>Stinking Imp<|"|>}<tool_call|>`
+
+	clean, toolCalls := ExtractEmbeddedToolCalls(rawContent)
+	if strings.Contains(clean, "<|tool_call>") {
+		t.Errorf("expected tool_call tokens to be stripped, got: %s", clean)
+	}
+	if !strings.Contains(clean, "small, squat figure manifests") {
+		t.Errorf("expected story text preserved, got: %s", clean)
+	}
+
+	if len(toolCalls) != 1 {
+		t.Fatalf("expected 1 extracted tool call, got %d", len(toolCalls))
+	}
+	if toolCalls[0].Function.Name != "spawn_npc" {
+		t.Errorf("expected function 'spawn_npc', got %s", toolCalls[0].Function.Name)
+	}
+
+	// Execute tool call on game
+	_, logs := g.ExecuteToolCallsFromMessage(openai.ChatCompletionMessage{ToolCalls: toolCalls})
+	if len(logs) == 0 {
+		t.Fatalf("expected tool execution logs")
+	}
+
+	// Verify NPC was spawned in game state
+	npc, exists := g.NPCs["stinking_imp"]
+	if !exists {
+		t.Fatalf("expected NPC 'stinking_imp' to exist in game state, found NPCs: %+v", g.NPCs)
+	}
+	if npc.Name != "Stinking Imp" {
+		t.Errorf("expected NPC name 'Stinking Imp', got %q", npc.Name)
+	}
+	if npc.CurrentHP != 15 {
+		t.Errorf("expected HP 15, got %d", npc.CurrentHP)
+	}
+	if npc.Disposition != 30 {
+		t.Errorf("expected annoyed disposition (30), got %d", npc.Disposition)
 	}
 }

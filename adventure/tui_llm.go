@@ -230,8 +230,16 @@ NPCs & COMBAT:
 				return
 			}
 			msgN := respN.Choices[0].Message
+			cleanContent, embedded := ExtractEmbeddedToolCalls(msgN.Content)
+			if len(embedded) > 0 {
+				_, logs := g.ExecuteToolCallsFromMessage(openai.ChatCompletionMessage{ToolCalls: embedded})
+				for _, l := range logs {
+					app.QueueUpdateDraw(func() { appendEvent("[tool] " + l) })
+				}
+			}
+			msgN.Content = cleanContent
 			messages = append(messages, msgN)
-			app.QueueUpdateDraw(func() { appendNarration(msgN.Content); updateViews() })
+			app.QueueUpdateDraw(func() { appendNarration(cleanContent); updateViews() })
 			processing = false
 			return
 		}
@@ -298,14 +306,29 @@ NPCs & COMBAT:
 				return
 			}
 			msg2 := resp2.Choices[0].Message
+			cleanContent2, embedded2 := ExtractEmbeddedToolCalls(msg2.Content)
+			if len(embedded2) > 0 {
+				_, logs2 := g.ExecuteToolCallsFromMessage(openai.ChatCompletionMessage{ToolCalls: embedded2})
+				for _, l := range logs2 {
+					app.QueueUpdateDraw(func() { appendEvent("[tool] " + l) })
+				}
+			}
+			msg2.Content = cleanContent2
 			messages = append(messages, msg2)
-			app.QueueUpdateDraw(func() { appendNarration(msg2.Content); updateViews() })
+			app.QueueUpdateDraw(func() { appendNarration(cleanContent2); updateViews() })
 			processing = false
 			return
 		}
 
-		// No tools called; display model content
-		app.QueueUpdateDraw(func() { appendNarration(msg.Content); updateViews() })
+		// No tools called; display model content after cleaning any embedded tool calls
+		cleanContent, embedded := ExtractEmbeddedToolCalls(msg.Content)
+		if len(embedded) > 0 {
+			_, logs := g.ExecuteToolCallsFromMessage(openai.ChatCompletionMessage{ToolCalls: embedded})
+			for _, l := range logs {
+				app.QueueUpdateDraw(func() { appendEvent("[tool] " + l) })
+			}
+		}
+		app.QueueUpdateDraw(func() { appendNarration(cleanContent); updateViews() })
 		processing = false
 	}
 

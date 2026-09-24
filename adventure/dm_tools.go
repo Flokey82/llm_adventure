@@ -2,6 +2,8 @@ package adventure
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/Flokey82/animus/pkg/tools"
 	"github.com/sashabaranov/go-openai"
@@ -93,14 +95,41 @@ func BuildAdventureTools(g *Game) []tools.AgentTool {
 			return g.TalkTo(npc, msg)
 		},
 		"spawn_npc": func(g *Game, args map[string]any) string {
-			id, _ := args["npc_id"].(string)
 			name, _ := args["name"].(string)
+			id, _ := args["npc_id"].(string)
+			if id == "" && name != "" {
+				id = strings.ToLower(strings.ReplaceAll(name, " ", "_"))
+			}
+			if id == "" {
+				id = fmt.Sprintf("npc_%d", len(g.NPCs)+1)
+			}
 			desc, _ := args["description"].(string)
 			persona, _ := args["persona"].(string)
-			disp, _ := args["disposition"].(float64)
-			hp, _ := args["hp"].(float64)
+			if persona == "" {
+				persona = fmt.Sprintf("You are %s. %s", name, desc)
+			}
+			disp := 50
+			if dFloat, ok := args["disposition"].(float64); ok {
+				disp = int(dFloat)
+			} else if dStr, ok := args["disposition"].(string); ok {
+				dStr = strings.ToLower(dStr)
+				switch {
+				case strings.Contains(dStr, "hostile"), strings.Contains(dStr, "aggressive"):
+					disp = 10
+				case strings.Contains(dStr, "annoyed"), strings.Contains(dStr, "angry"), strings.Contains(dStr, "offended"):
+					disp = 30
+				case strings.Contains(dStr, "friendly"), strings.Contains(dStr, "ally"):
+					disp = 80
+				default:
+					disp = 50
+				}
+			}
+			hp := 10
+			if hpFloat, ok := args["hp"].(float64); ok && hpFloat > 0 {
+				hp = int(hpFloat)
+			}
 			history, _ := args["history"].(string)
-			return g.SpawnNPC(id, name, desc, persona, int(disp), int(hp), history)
+			return g.SpawnNPC(id, name, desc, persona, disp, hp, history)
 		},
 	}
 

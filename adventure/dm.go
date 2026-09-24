@@ -216,7 +216,7 @@ func (dm *DungeonMaster) Step(ctx context.Context, playerInput string) (string, 
 		if err != nil {
 			return out, nil
 		}
-		return narration, nil
+		return dm.sanitizeAndExecuteEmbedded(narration), nil
 	}
 
 	// 2. Complex or agentic turn with tool calling
@@ -290,7 +290,7 @@ func (dm *DungeonMaster) Step(ctx context.Context, playerInput string) (string, 
 		if err != nil {
 			return combinedOut, nil
 		}
-		return narration, nil
+		return dm.sanitizeAndExecuteEmbedded(narration), nil
 	}
 
 	// 3. No tools called: check if creative narration is needed or return fast response
@@ -299,10 +299,22 @@ func (dm *DungeonMaster) Step(ctx context.Context, playerInput string) (string, 
 		narration, err := dm.narrateAction(ctx, playerInput, "The player acts or speaks freely in the scene.", true)
 		if err == nil && narration != "" {
 			dm.Agent.Episodic.Log("chat", fmt.Sprintf("Player said: %q -> %s", playerInput, narration))
-			return narration, nil
+			return dm.sanitizeAndExecuteEmbedded(narration), nil
 		}
 	}
 
 	dm.Agent.Episodic.Log("chat", fmt.Sprintf("Player said: %q -> %s", playerInput, content))
-	return content, nil
+	return dm.sanitizeAndExecuteEmbedded(content), nil
+}
+
+func (dm *DungeonMaster) sanitizeAndExecuteEmbedded(raw string) string {
+	clean, embedded := ExtractEmbeddedToolCalls(raw)
+	if len(embedded) > 0 {
+		_, logs := dm.Game.ExecuteToolCallsFromMessage(openai.ChatCompletionMessage{ToolCalls: embedded})
+		for _, l := range logs {
+			dm.Agent.Episodic.Log("tool", l)
+		}
+		dm.RefreshTools()
+	}
+	return clean
 }
