@@ -144,13 +144,61 @@ func (g *Game) Tick() []string {
 
 // Move attempts to move the player in the specified direction. Returns a message describing the result.
 func (g *Game) Move(direction string) string {
+	direction = strings.ToLower(strings.TrimSpace(direction))
+	switch direction {
+	case "n":
+		direction = "north"
+	case "s":
+		direction = "south"
+	case "e":
+		direction = "east"
+	case "w":
+		direction = "west"
+	case "u", "upstairs":
+		direction = "up"
+	case "d", "downstairs":
+		direction = "down"
+	}
+
 	room := g.Rooms[g.CurrentRoomID]
 	door, exists := room.Doors[direction]
 	if !exists || door == nil {
-		return "There is no door in that direction."
+		// Try matching by door description or keyword (e.g. "stairs", "ladder", "hatch", "lift", "shaft")
+		for dKey, d := range room.Doors {
+			if d == nil {
+				continue
+			}
+			lowerDesc := strings.ToLower(d.Description)
+			if strings.Contains(lowerDesc, direction) || strings.Contains(direction, lowerDesc) ||
+				(strings.HasPrefix(direction, "stair") && strings.Contains(lowerDesc, "stair")) ||
+				(strings.HasPrefix(direction, "ladder") && strings.Contains(lowerDesc, "ladder")) ||
+				(strings.HasPrefix(direction, "lift") && strings.Contains(lowerDesc, "lift")) ||
+				(strings.HasPrefix(direction, "shaft") && strings.Contains(lowerDesc, "shaft")) ||
+				(strings.HasPrefix(direction, "hatch") && strings.Contains(lowerDesc, "hatch")) {
+				door = d
+				direction = dKey
+				exists = true
+				break
+			}
+		}
+	}
+
+	if !exists || door == nil {
+		return fmt.Sprintf("There is no path %s from here.", direction)
 	}
 	if !door.Open {
-		return "The door is closed."
+		// Auto-open open passages like stairs, ladders, elevators, or conduits
+		isPassage := strings.Contains(door.Description, "stairs") || strings.Contains(door.Description, "ladder") ||
+			strings.Contains(door.Description, "lift") || strings.Contains(door.Description, "conduit") ||
+			strings.Contains(door.Description, "escalator")
+		isHatch := strings.Contains(door.Description, "hatch") || strings.Contains(door.Description, "trapdoor") ||
+			strings.Contains(door.Description, "door") || strings.Contains(door.Description, "gate")
+
+		if isPassage && !isHatch && !door.Locked {
+			door.Open = true
+		} else {
+			return fmt.Sprintf("The %s to the %s is closed. (You can 'open %s')", door.Description, direction, direction)
+		}
 	}
 
 	otherRoom, _, ok := door.OtherSide(g.CurrentRoomID)
@@ -196,31 +244,99 @@ func (g *Game) SpawnItem(itemName string, reasoning string) string {
 	return logMsg
 }
 
-// OpenDoor attempts to open a door in the specified direction. Returns a message describing the result.
+// OpenDoor attempts to open a door in the specified direction or matching a description.
 func (g *Game) OpenDoor(direction string) string {
 	room := g.Rooms[g.CurrentRoomID]
-	door, exists := room.Doors[direction]
-	if !exists || door == nil {
-		return "There is no door there to open."
+	target := strings.ToLower(strings.TrimSpace(direction))
+	switch target {
+	case "n":
+		target = "north"
+	case "s":
+		target = "south"
+	case "e":
+		target = "east"
+	case "w":
+		target = "west"
+	case "u":
+		target = "up"
+	case "d":
+		target = "down"
 	}
-	// If the door is locked, check for the rusty_key in the inventory
+
+	door, exists := room.Doors[target]
+	targetDir := target
+
+	// If not found by direction key, try matching by door description (e.g. "hatch", "stairs", "titanium door")
+	if !exists || door == nil {
+		var matches []*Door
+		var matchDirs []string
+		for dir, d := range room.Doors {
+			if d != nil {
+				dDesc := strings.ToLower(d.Description)
+				if strings.Contains(dDesc, target) || strings.Contains(target, dDesc) ||
+					(target == "door" && strings.Contains(dDesc, "door")) ||
+					(target == "hatch" && strings.Contains(dDesc, "hatch")) ||
+					(target == "passage" || target == "") {
+					matches = append(matches, d)
+					matchDirs = append(matchDirs, dir)
+				}
+			}
+		}
+		if len(matches) == 1 {
+			door = matches[0]
+			targetDir = matchDirs[0]
+			exists = true
+		} else if len(matches) > 1 {
+			var closedMatches []*Door
+			var closedDirs []string
+			for i, m := range matches {
+				if !m.Open {
+					closedMatches = append(closedMatches, m)
+					closedDirs = append(closedDirs, matchDirs[i])
+				}
+			}
+			if len(closedMatches) == 1 {
+				door = closedMatches[0]
+				targetDir = closedDirs[0]
+				exists = true
+			} else if len(closedMatches) > 1 {
+				return fmt.Sprintf("Which door do you want to open? Options: %v", closedDirs)
+			} else {
+				return fmt.Sprintf("The %s is already open.", target)
+			}
+		}
+	}
+
+	if !exists || door == nil {
+		return "There is no such door or passage here to open."
+	}
+	if door.Open {
+		return fmt.Sprintf("The %s to the %s is already open.", door.Description, targetDir)
+	}
+
+	// If the door is locked, check for any suitable key in the inventory
 	if door.Locked {
 		hasKey := false
+		var usedKey string
 		for _, item := range g.Inventory {
-			if item == "rusty_key" {
+			lower := strings.ToLower(item)
+			if strings.Contains(lower, "key") || strings.Contains(lower, "keycard") || strings.Contains(lower, "badge") || strings.Contains(lower, "torch") {
 				hasKey = true
+				usedKey = item
 				break
 			}
 		}
 		if !hasKey {
-			return "It's locked. You probably need a key."
+			return fmt.Sprintf("The %s is locked. You need a key or keycard to open it.", door.Description)
 		}
 		// Unlock and open the door
 		door.Locked = false
+		door.Open = true
+		return fmt.Sprintf("You unlock and open the %s to the %s using the %s.", door.Description, targetDir, usedKey)
 	}
 
 	door.Open = true
-	return fmt.Sprintf("You opened the %s door.", direction)
+	return fmt.Sprintf("You opened the %s to the %s.", door.Description, targetDir)
 }
 
 // DropItem removes an item from the player's inventory and places it in the current room.

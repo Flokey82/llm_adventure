@@ -69,33 +69,44 @@ func (g *Game) ExecuteQuickCommand(input string) (bool, string, []string) {
 		return true, fmt.Sprintf("Game successfully loaded from %s", filename), nil
 	}
 
-	// Handle movement commands like "move north" or "north"
-	movePrefixes := []string{"move ", "go ", "walk "} // Common verbs for movement
+	// Handle movement commands like "move north", "go up", "climb stairs", or "north"
+	movePrefixes := []string{"move ", "go ", "walk ", "climb "}
 	for _, p := range movePrefixes {
 		if strings.HasPrefix(s, p) {
 			dir := strings.TrimSpace(strings.TrimPrefix(s, p))
 			return true, g.Move(dir), nil
 		}
 	}
-	// Allow single-word directions like "north"
+	// Allow single-word directions, shortcuts, and climbing
 	switch s {
-	case "north", "south", "east", "west":
+	case "north", "south", "east", "west", "up", "down", "n", "s", "e", "w", "u", "d", "upstairs", "downstairs":
 		return true, g.Move(s), nil
+	case "climb":
+		room := g.Rooms[g.CurrentRoomID]
+		if _, ok := room.Doors["up"]; ok {
+			return true, g.Move("up"), nil
+		}
+		if _, ok := room.Doors["down"]; ok {
+			return true, g.Move("down"), nil
+		}
+		return true, "There is nothing here to climb.", nil
 	}
 
-	// Handle door commands like "open north" or "unlock door"
-	if strings.HasPrefix(s, "open ") || strings.HasPrefix(s, "unlock ") {
-		// Strip leading verb and trailing word "door" if present
+	// Handle door commands like "open north", "open hatch", "unlock door"
+	if s == "open" || s == "unlock" || strings.HasPrefix(s, "open ") || strings.HasPrefix(s, "unlock ") {
 		rest := s
 		if strings.HasPrefix(rest, "open ") {
 			rest = strings.TrimSpace(strings.TrimPrefix(rest, "open "))
-		} else {
+		} else if strings.HasPrefix(rest, "unlock ") {
 			rest = strings.TrimSpace(strings.TrimPrefix(rest, "unlock "))
+		} else {
+			rest = "door"
 		}
-		rest = strings.TrimSuffix(rest, " door")
-		rest = strings.TrimSpace(rest)
+		if strings.HasSuffix(rest, " door") && rest != "door" {
+			rest = strings.TrimSpace(strings.TrimSuffix(rest, " door"))
+		}
 		if rest == "" {
-			return false, "", nil
+			rest = "door"
 		}
 		return true, g.OpenDoor(rest), nil
 	}
@@ -127,6 +138,18 @@ func (g *Game) ExecuteQuickCommand(input string) (bool, string, []string) {
 			// Handle ambiguous matches
 			prompt := fmt.Sprintf("Multiple items match '%s': %v. Please choose.", item, matches)
 			return true, prompt, matches
+		}
+	}
+
+	// Handle dropping items like "drop torch" or "discard key"
+	dropPrefixes := []string{"drop ", "discard "}
+	for _, p := range dropPrefixes {
+		if strings.HasPrefix(s, p) {
+			item := strings.TrimSpace(strings.TrimPrefix(s, p))
+			if item == "" {
+				return false, "", nil
+			}
+			return true, g.DropItem(item), nil
 		}
 	}
 

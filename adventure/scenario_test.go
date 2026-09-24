@@ -2,6 +2,7 @@ package adventure
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/sashabaranov/go-openai"
@@ -99,3 +100,107 @@ func TestLiveScenarioGeneration(t *testing.T) {
 		t.Errorf("expected rooms to be generated from scenario")
 	}
 }
+
+func TestStarshipThematicPassages(t *testing.T) {
+	presets := PresetScenarios()
+	sc := presets["starship"]
+	g := NewGameWithScenario(sc, 42)
+
+	for _, room := range g.Rooms {
+		for dir, door := range room.Doors {
+			if door == nil {
+				continue
+			}
+			lower := strings.ToLower(door.Description)
+			if strings.Contains(lower, "stone stairs") || strings.Contains(lower, "rope ladder") || strings.Contains(lower, "wooden ladder") {
+				t.Errorf("found medieval description %q in starship room %s direction %s", door.Description, room.ID, dir)
+			}
+		}
+	}
+}
+
+func TestVerticalMovementQuickmatch(t *testing.T) {
+	roomA := &Room{
+		ID:    "deck_a",
+		Doors: make(map[string]*Door),
+	}
+	roomB := &Room{
+		ID:    "deck_b",
+		Doors: make(map[string]*Door),
+	}
+	roomC := &Room{
+		ID:    "deck_c",
+		Doors: make(map[string]*Door),
+	}
+
+	// Up door: open vertical access ladder
+	upDoor := &Door{
+		A:           "deck_a",
+		ADir:        "up",
+		B:           "deck_b",
+		BDir:        "down",
+		Description: "vertical access ladder",
+		Open:        true,
+	}
+	roomA.Doors["up"] = upDoor
+	roomB.Doors["down"] = upDoor
+
+	// Down door: closed service hatch
+	downDoor := &Door{
+		A:           "deck_a",
+		ADir:        "down",
+		B:           "deck_c",
+		BDir:        "up",
+		Description: "lower deck service hatch",
+		Open:        false,
+	}
+	roomA.Doors["down"] = downDoor
+	roomC.Doors["up"] = downDoor
+
+	g := &Game{
+		CurrentRoomID: "deck_a",
+		Rooms: map[string]*Room{
+			"deck_a": roomA,
+			"deck_b": roomB,
+			"deck_c": roomC,
+		},
+	}
+
+	// 1. Single-letter "u" and word "up"
+	handled, out, _ := g.ExecuteQuickCommand("u")
+	if !handled || g.CurrentRoomID != "deck_b" {
+		t.Fatalf("expected 'u' to move to deck_b, got handled=%v, out=%q, room=%s", handled, out, g.CurrentRoomID)
+	}
+
+	// 2. Return down using "down"
+	handled, out, _ = g.ExecuteQuickCommand("down")
+	if !handled || g.CurrentRoomID != "deck_a" {
+		t.Fatalf("expected 'down' to move back to deck_a, got handled=%v, out=%q, room=%s", handled, out, g.CurrentRoomID)
+	}
+
+	// 3. "climb ladder"
+	handled, out, _ = g.ExecuteQuickCommand("climb ladder")
+	if !handled || g.CurrentRoomID != "deck_b" {
+		t.Fatalf("expected 'climb ladder' to move to deck_b, got handled=%v, out=%q, room=%s", handled, out, g.CurrentRoomID)
+	}
+	g.CurrentRoomID = "deck_a"
+
+	// 4. Down door is a closed hatch - moving should inform it's closed
+	handled, out, _ = g.ExecuteQuickCommand("d")
+	if !handled || g.CurrentRoomID != "deck_a" {
+		t.Fatalf("expected 'd' to be blocked by closed hatch, got handled=%v, out=%q", handled, out)
+	}
+
+	// 5. Open hatch via quickmatch
+	handled, out, _ = g.ExecuteQuickCommand("open hatch")
+	if !handled || !downDoor.Open {
+		t.Fatalf("expected 'open hatch' to open the hatch, got handled=%v, out=%q", handled, out)
+	}
+
+	// 6. Now move down
+	handled, out, _ = g.ExecuteQuickCommand("move down")
+	if !handled || g.CurrentRoomID != "deck_c" {
+		t.Fatalf("expected 'move down' to reach deck_c, got handled=%v, out=%q, room=%s", handled, out, g.CurrentRoomID)
+	}
+}
+

@@ -6,6 +6,7 @@ package adventure
 import (
 	"fmt"
 	"math/rand"
+	"strings"
 	"time"
 )
 
@@ -89,6 +90,8 @@ type MapGenerator struct {
 	idCounter   map[string]int
 	templates   []RoomTemplate
 	doorDescs   []string
+	upDescs     []string
+	downDescs   []string
 	startRoomID string
 }
 
@@ -217,11 +220,19 @@ func (mg *MapGenerator) createDoors() []*Door {
 				
 				desc := "door"
 				if dir == "up" {
-				    desc = []string{"wooden ladder", "spiral staircase", "rope ladder"}[mg.rand.Intn(3)]
+					if len(mg.upDescs) > 0 {
+						desc = mg.upDescs[mg.rand.Intn(len(mg.upDescs))]
+					} else {
+						desc = []string{"wooden ladder", "spiral staircase", "rope ladder"}[mg.rand.Intn(3)]
+					}
 				} else if dir == "down" {
-				    desc = []string{"stone stairs", "trapdoor", "dark hole with a ladder"}[mg.rand.Intn(3)]
+					if len(mg.downDescs) > 0 {
+						desc = mg.downDescs[mg.rand.Intn(len(mg.downDescs))]
+					} else {
+						desc = []string{"stone stairs", "trapdoor", "dark hole with a ladder"}[mg.rand.Intn(3)]
+					}
 				} else {
-				    desc = lateralDescs[mg.rand.Intn(len(lateralDescs))]
+					desc = lateralDescs[mg.rand.Intn(len(lateralDescs))]
 				}
 
 				d := &Door{A: id, ADir: dir, B: nid, BDir: opposite(dir), Description: desc}
@@ -276,8 +287,15 @@ func (mg *MapGenerator) ensureReachability(createdDoors []*Door) {
 	}
 
 	for _, d := range createdDoors {
+		isPassage := strings.Contains(d.Description, "stairs") || strings.Contains(d.Description, "ladder") ||
+			strings.Contains(d.Description, "lift") || strings.Contains(d.Description, "conduit") ||
+			strings.Contains(d.Description, "escalator")
+		isHatch := strings.Contains(d.Description, "hatch") || strings.Contains(d.Description, "trapdoor") ||
+			strings.Contains(d.Description, "door") || strings.Contains(d.Description, "gate")
+
 		if treeDoors[d] {
 			d.Locked = false
+			d.Open = isPassage && !isHatch
 		} else {
 			// If it's not in the tree, there's a 50% chance it's just a regular door (unlocked)
 			// to create more cycles, and 20% chance it's locked.
@@ -285,8 +303,10 @@ func (mg *MapGenerator) ensureReachability(createdDoors []*Door) {
 			r := mg.rand.Intn(100)
 			if r < 50 {
 				d.Locked = false
+				d.Open = isPassage && !isHatch
 			} else if r < 70 {
 				d.Locked = true
+				d.Open = false
 			} else {
 				// Effectively remove the door by not setting it as open/unlocked
 				// Actually, we should probably just remove it from the room maps
@@ -295,7 +315,6 @@ func (mg *MapGenerator) ensureReachability(createdDoors []*Door) {
 				continue
 			}
 		}
-		d.Open = false
 	}
 }
 
@@ -314,13 +333,19 @@ func GenerateMap() map[string]*Room {
 
 // GenerateMapWithTemplates generates a map using the specified room templates.
 // Returns the room map and the starting room's unique ID.
-func GenerateMapWithTemplates(seed int64, templates []RoomTemplate, doorDescs ...[]string) (map[string]*Room, string) {
+func GenerateMapWithTemplates(seed int64, templates []RoomTemplate, descs ...[]string) (map[string]*Room, string) {
 	if seed == 0 {
 		seed = time.Now().UnixNano()
 	}
 	mg := NewMapGenerator(seed, 11, 9, templates)
-	if len(doorDescs) > 0 && len(doorDescs[0]) > 0 {
-		mg.doorDescs = doorDescs[0]
+	if len(descs) > 0 && len(descs[0]) > 0 {
+		mg.doorDescs = descs[0]
+	}
+	if len(descs) > 1 && len(descs[1]) > 0 {
+		mg.upDescs = descs[1]
+	}
+	if len(descs) > 2 && len(descs[2]) > 0 {
+		mg.downDescs = descs[2]
 	}
 	mg.placeRooms()
 	createdDoors := mg.createDoors()
