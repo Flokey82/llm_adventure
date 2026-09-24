@@ -206,16 +206,19 @@ NPCs & COMBAT:
 				return
 			}
 
-			// Not ambiguous: record user and result so the model sees state,
-			// then ask the model to generate narration.
-			messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: userInput})
-			messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "ACTION RESULT: " + out})
-
 			// Advance world state (tick) after the player's quick action
 			g.Tick()
 
-			// Request narration from the model without tools
-			respN, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{Model: model, Messages: messages})
+			// Route narration through Granite classifier: only call Gemma if Granite says YES
+			modelToUse := model
+			if toolModel != "" && toolModel != model {
+				if !classifyRequiresCreativeNarration(client, toolModel, userInput, out) {
+					modelToUse = toolModel
+				}
+			}
+
+			// Request narration from the chosen model
+			respN, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{Model: modelToUse, Messages: messages})
 			if err != nil {
 				app.QueueUpdateDraw(func() { appendEvent("LLM error: " + err.Error()) })
 				processing = false
@@ -266,8 +269,24 @@ NPCs & COMBAT:
 			// Advance world state (tick) after tool execution
 			g.Tick()
 
+			// Ask Granite classifier whether to escalate to Gemma for narration
+			modelToUse := model
+			if toolModel != "" && toolModel != model {
+				isDramatic := false
+				for _, tc := range msg.ToolCalls {
+					fn := tc.Function.Name
+					if fn == "talk_to" || fn == "attack" || fn == "resurrect" || fn == "spawn_npc" || fn == "discover_room" {
+						isDramatic = true
+						break
+					}
+				}
+				if !isDramatic && !classifyRequiresCreativeNarration(client, toolModel, userInput, strings.Join(logs, "; ")) {
+					modelToUse = toolModel
+				}
+			}
+
 			// Ask model to generate narration now that tools have updated state
-			resp2, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{Model: model, Messages: messages})
+			resp2, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{Model: modelToUse, Messages: messages})
 			if err != nil {
 				app.QueueUpdateDraw(func() { appendEvent("LLM error: " + err.Error()) })
 				processing = false
@@ -581,4 +600,30 @@ func renderTUIViews(g *Game, roomView, invView, mapView *tview.TextView) {
 		}
 		fmt.Fprintln(mapView, line)
 	}
+}
+
+// classifyRequiresCreativeNarration asks the fast tool model to classify whether an action requires heavy creative narration.
+func classifyRequiresCreativeNarration(client LLMClient, toolModel, action, outcome string) bool {
+	if toolModel == "" {
+		return true
+	}
+	resp, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{
+		Model: toolModel,
+		Messages: []openai.ChatCompletionMessage{
+			{
+				Role:    openai.ChatMessageRoleSystem,
+				Content: "Classify if the player's action and outcome requires dramatic creative narration (YES), or is a simple routine mechanic like opening an ordinary door or picking up an item (NO). Reply with ONLY 'YES' or 'NO'.",
+			},
+			{
+				Role:    openai.ChatMessageRoleUser,
+				Content: fmt.Sprintf("Action: %s\nOutcome: %s", action, outcome),
+			},
+		},
+		MaxTokens:   5,
+		Temperature: 0.0,
+	})
+	if err != nil || len(resp.Choices) == 0 {
+		return false
+	}
+	return strings.Contains(strings.ToUpper(resp.Choices[0].Message.Content), "YES")
 }

@@ -117,18 +117,24 @@ func (dm *DungeonMaster) narrateAction(ctx context.Context, playerAction, outcom
 }
 
 // classifyNeedsCreative uses the small model to rapidly classify whether an ambiguous player input warrants the 26B creative model.
-func (dm *DungeonMaster) classifyNeedsCreative(ctx context.Context, playerInput string) bool {
-	words := strings.Fields(playerInput)
-	if len(words) <= 2 {
-		return false
+// classifyNeedsCreative uses the small model to rapidly classify whether an action or text warrants the 26B creative model.
+func (dm *DungeonMaster) classifyNeedsCreative(ctx context.Context, playerInput, outcome string) bool {
+	content := playerInput
+	if outcome != "" {
+		content = fmt.Sprintf("Action: %s\nOutcome: %s", playerInput, outcome)
+	} else {
+		words := strings.Fields(playerInput)
+		if len(words) <= 2 {
+			return false
+		}
 	}
 
 	prompt := []openai.ChatCompletionMessage{
 		{
 			Role:    openai.ChatMessageRoleSystem,
-			Content: "Classify if the player's text is creative roleplay/dialogue (YES) or a simple routine action/status check (NO). Reply with ONLY 'YES' or 'NO'.",
+			Content: "Classify if the player's action and outcome requires dramatic creative narration (YES), or is a simple routine mechanic like opening an ordinary door or picking up an item (NO). Reply with ONLY 'YES' or 'NO'.",
 		},
-		{Role: openai.ChatMessageRoleUser, Content: playerInput},
+		{Role: openai.ChatMessageRoleUser, Content: content},
 	}
 
 	resp, err := dm.Agent.LLMClient.Chat(ctx, prompt,
@@ -199,8 +205,13 @@ func (dm *DungeonMaster) Step(ctx context.Context, playerInput string) (string, 
 
 		escalate := isNewRoom || hpChanged
 
-		// For routine mechanical actions (e.g. picking up an item, or moving between already-visited rooms),
-		// we use the fast tool model or distilled model, avoiding heavy Gemma 26B calls unless escalated.
+		// Ask Granite to classify whether this quick action outcome warrants Gemma
+		if !escalate && dm.isDualModel() {
+			escalate = dm.classifyNeedsCreative(ctx, playerInput, out)
+		}
+
+		// For routine mechanical actions (e.g. picking up an item, opening an ordinary door),
+		// we use the fast tool model (Granite), completely avoiding heavy Gemma calls unless escalated.
 		narration, err := dm.narrateAction(ctx, playerInput, out, escalate)
 		if err != nil {
 			return out, nil
@@ -269,6 +280,12 @@ func (dm *DungeonMaster) Step(ctx context.Context, playerInput string) (string, 
 		}
 
 		combinedOut := strings.Join(toolOutputs, "; ")
+
+		// Ask Granite classifier if tool consequence warrants Gemma
+		if !escalate && dm.isDualModel() {
+			escalate = dm.classifyNeedsCreative(ctx, playerInput, combinedOut)
+		}
+
 		narration, err := dm.narrateAction(ctx, playerInput, combinedOut, escalate)
 		if err != nil {
 			return combinedOut, nil
@@ -278,7 +295,7 @@ func (dm *DungeonMaster) Step(ctx context.Context, playerInput string) (string, 
 
 	// 3. No tools called: check if creative narration is needed or return fast response
 	content := choice.Message.Content
-	if dm.isDualModel() && dm.classifyNeedsCreative(ctx, playerInput) {
+	if dm.isDualModel() && dm.classifyNeedsCreative(ctx, playerInput, "") {
 		narration, err := dm.narrateAction(ctx, playerInput, "The player acts or speaks freely in the scene.", true)
 		if err == nil && narration != "" {
 			dm.Agent.Episodic.Log("chat", fmt.Sprintf("Player said: %q -> %s", playerInput, narration))
