@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/Flokey82/llm_adventure/adventure"
 	"github.com/sashabaranov/go-openai"
@@ -16,10 +19,14 @@ const (
 )
 
 func main() {
-	var baseURL, model, roomPrompt string
+	var baseURL, model, roomPrompt, scenarioFlag, loadSavePath string
+	var selectScenario bool
 	flag.StringVar(&baseURL, "base-url", "http://192.168.86.208:8000/api/v1", "Base URL for the OpenAI API")
 	flag.StringVar(&model, "model", "granite-4.0-h-tiny-GGUF", "LLM model to use")
-	flag.StringVar(&roomPrompt, "room-prompt", "You are a dark fantasy writer. Generate a static room description based on the provided tags. Keep it concise and atmospheric.", "System prompt for room generation")
+	flag.StringVar(&roomPrompt, "room-prompt", "", "Custom prompt for room generation (defaults to scenario atmosphere)")
+	flag.StringVar(&scenarioFlag, "scenario", "", "Scenario to play: victorian, starship, cyberpunk, sunken, or any custom description")
+	flag.BoolVar(&selectScenario, "select", false, "Interactively choose or describe a scenario on startup")
+	flag.StringVar(&loadSavePath, "load", "", "Path to saved game JSON file to load on start")
 	flag.Parse()
 
 	// Configure for Lemonade Server
@@ -27,21 +34,98 @@ func main() {
 	config.BaseURL = baseURL // Your Lemonade Server
 	client := openai.NewClientWithConfig(config)
 
-	// Allow an optional deterministic seed via env var ONEIROS_SEED or CLI arg later.
-	game := adventure.NewGame()
+	// Determine Scenario
+	presets := adventure.PresetScenarios()
+	var selectedScenario adventure.Scenario
 
-	// Inject the dynamic room generator used when exploring without a door.
+	if selectScenario {
+		fmt.Println("==================================================")
+		fmt.Println("        Choose an Adventure Setting               ")
+		fmt.Println("==================================================")
+		fmt.Println("1) Victorian Manor   - Gothic mystery, decaying halls, dust & mist")
+		fmt.Println("2) Derelict Starship - Deep-space isolation, emergency lights, xenomorphs")
+		fmt.Println("3) Cyberpunk Sprawl  - Neon megacity alleyways, netrunners & chop shops")
+		fmt.Println("4) Sunken Galleon    - Sunken pirate shipwreck on a glowing coral reef")
+		fmt.Println("5) Custom Setting    - Describe your own world for the LLM to generate")
+		fmt.Print("\nSelect scenario [1-5]: ")
+
+		var choice string
+		fmt.Scanln(&choice)
+		choice = strings.TrimSpace(choice)
+
+		switch choice {
+		case "1":
+			selectedScenario = presets["victorian"]
+		case "2":
+			selectedScenario = presets["starship"]
+		case "3":
+			selectedScenario = presets["cyberpunk"]
+		case "4":
+			selectedScenario = presets["sunken"]
+		case "5":
+			fmt.Print("Describe your setting (e.g. 'Antarctic lab during a fungal blizzard'): ")
+			scanner := bufio.NewScanner(os.Stdin)
+			if scanner.Scan() {
+				desc := strings.TrimSpace(scanner.Text())
+				if desc != "" {
+					fmt.Println("Generating custom world with LLM...")
+					genSc, err := adventure.GenerateScenario(context.Background(), client, model, desc)
+					if err != nil {
+						fmt.Printf("Generation failed (%v), falling back to Victorian Manor.\n", err)
+						selectedScenario = presets["victorian"]
+					} else {
+						selectedScenario = *genSc
+					}
+				} else {
+					selectedScenario = presets["victorian"]
+				}
+			}
+		default:
+			selectedScenario = presets["victorian"]
+		}
+	} else if scenarioFlag != "" {
+		lower := strings.ToLower(strings.TrimSpace(scenarioFlag))
+		if p, ok := presets[lower]; ok {
+			selectedScenario = p
+		} else {
+			fmt.Printf("Generating custom scenario from premise: %q...\n", scenarioFlag)
+			genSc, err := adventure.GenerateScenario(context.Background(), client, model, scenarioFlag)
+			if err != nil {
+				fmt.Printf("Warning: failed to generate scenario (%v), using Victorian Manor.\n", err)
+				selectedScenario = presets["victorian"]
+			} else {
+				selectedScenario = *genSc
+			}
+		}
+	} else {
+		selectedScenario = presets["victorian"]
+	}
+
+	// Create game with scenario
+	game := adventure.NewGameWithScenario(selectedScenario)
+
+	// If load flag provided, restore saved state
+	if loadSavePath != "" {
+		if err := game.Load(loadSavePath); err != nil {
+			fmt.Printf("Warning: failed to load save from %s: %v\n", loadSavePath, err)
+		} else {
+			fmt.Printf("Restored saved world from %s (Scenario: %s)\n", loadSavePath, game.ScenarioName)
+		}
+	}
+
+	// Inject dynamic room generator matching the scenario
 	game.AI_GenerateRoom = func(fromRoom *adventure.Room, direction string) *adventure.Room {
-		systemPrompt := `You are a dark fantasy writer designing a procedural text adventure game.
+		systemPrompt := fmt.Sprintf(`You are designing a procedural text adventure game set in: %s.
+Atmosphere: %s
 Return a JSON object describing a new room. Structure:
 {
-  "name": "a short snake_case id like 'dark_cave'",
-  "room_type": "a thematic room type like 'torture_chamber', 'overgrown_greenhouse', etc.",
+  "name": "a short snake_case id like 'engine_deck'",
+  "room_type": "a thematic room type appropriate for this setting",
   "base_prompt": "A comma separated list of atmospheric details",
   "items": ["list", "of", "items"], // optional
   "furniture": ["list", "of", "notable", "features", "or", "furniture"], // optional
   "secrets": ["a hidden detail", "a secret cache"] // optional, hidden info discoverable by searching
-}`
+}`, game.ScenarioName, game.WorldPrompt)
 		userMsg := fmt.Sprintf("The player is in '%s' and moved '%s' into the unknown. Generate what they find.", fromRoom.ID, direction)
 
 		resp, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{
@@ -129,10 +213,14 @@ Return a JSON object describing a new room. Structure:
 	// Inject the AI describer so rooms can be generated on first visit.
 	game.AI_GenerateDescription = func(prompt string) string {
 		fmt.Printf("\n[System] Generating new room description via LLM...\n")
+		sysPrompt := roomPrompt
+		if sysPrompt == "" {
+			sysPrompt = fmt.Sprintf("You are an atmospheric writer for an adventure setting: %s. Atmosphere: %s. Generate a static room description based on the provided tags. Keep it concise (2-3 sentences) and evocative.", game.ScenarioName, game.WorldPrompt)
+		}
 		resp, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{
 			Model: model,
 			Messages: []openai.ChatCompletionMessage{
-				{Role: openai.ChatMessageRoleSystem, Content: roomPrompt},
+				{Role: openai.ChatMessageRoleSystem, Content: sysPrompt},
 				{Role: openai.ChatMessageRoleUser, Content: prompt},
 			},
 		})

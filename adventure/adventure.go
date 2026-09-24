@@ -14,16 +14,18 @@ import (
 type Game struct {
 	CurrentRoomID          string                                // ID of the room the player is currently in
 	Inventory              []string                              // List of items the player is carrying
-	Rooms                  map[string]*Room                      // Map of room IDs to Room objects
-	AI_GenerateDescription func(prompt string) string            // Function to generate room descriptions
-	AI_GenerateRoom        func(fromRoom *Room, direction string) *Room // Function to generate new rooms
-	AI_CharacterChat       func(npc *NPC, userMessage string) string // Function for NPC structured dialogue
-	NPCs                   map[string]*NPC                       // Map of NPC IDs to NPC objects
-	Timers                 map[string]int                                // Timers for time-based events, keyed by strings
-	TimerCallbacks         map[string]func(*Game, string)                // Callbacks for timers
-	PlayerNotes            []string                              // Persistent notes about the player (e.g. "covered in poop")
+	Rooms                  map[string]*Room                      `json:"rooms"` // Map of room IDs to Room objects
+	AI_GenerateDescription func(prompt string) string            `json:"-"`     // Function to generate room descriptions
+	AI_GenerateRoom        func(fromRoom *Room, direction string) *Room `json:"-"`     // Function to generate new rooms
+	AI_CharacterChat       func(npc *NPC, userMessage string) string `json:"-"`     // Function for NPC structured dialogue
+	NPCs                   map[string]*NPC                       `json:"npcs"`  // Map of NPC IDs to NPC objects
+	Timers                 map[string]int                        `json:"timers"` // Timers for time-based events, keyed by strings
+	TimerCallbacks         map[string]func(*Game, string)        `json:"-"`     // Callbacks for timers
+	PlayerNotes            []string                              `json:"player_notes"` // Persistent notes about the player (e.g. "covered in poop")
 	PlayerHP               int                                   // Current hitpoints of the player
 	PlayerMaxHP            int                                   // Maximum hitpoints of the player
+	ScenarioName           string                                // Thematic scenario name (e.g. "Derelict Starship")
+	WorldPrompt            string                                // Thematic atmospheric narrative prompt for the DM
 }
 
 // NPC represents a non-player character in the world.

@@ -30,18 +30,43 @@ func (g *Game) ExecuteQuickCommand(input string) (bool, string, []string) {
 		return true, g.Search(), nil
 	case "inventory", "inv":
 		return true, fmt.Sprintf("Inventory: %v", g.Inventory), nil
-	case "save":
-		err := g.Save("savegame.json")
-		if err != nil {
-			return true, fmt.Sprintf("Failed to save game: %v", err), nil
+	}
+
+	// Handle save and load commands (e.g. "save", "save mygame", "load", "load mygame.json")
+	if s == "save" || strings.HasPrefix(s, "save ") {
+		filename := "savegame.json"
+		if strings.HasPrefix(s, "save ") {
+			target := strings.TrimSpace(input[5:])
+			if target != "" {
+				if !strings.HasSuffix(strings.ToLower(target), ".json") {
+					target += ".json"
+				}
+				filename = target
+			}
 		}
-		return true, "Game saved to savegame.json", nil
-	case "load":
-		err := g.Load("savegame.json")
+		err := g.Save(filename)
 		if err != nil {
-			return true, fmt.Sprintf("Failed to load game: %v", err), nil
+			return true, fmt.Sprintf("Failed to save game to %s: %v", filename, err), nil
 		}
-		return true, "Game loaded from savegame.json", nil
+		return true, fmt.Sprintf("Game successfully saved to %s", filename), nil
+	}
+
+	if s == "load" || strings.HasPrefix(s, "load ") {
+		filename := "savegame.json"
+		if strings.HasPrefix(s, "load ") {
+			target := strings.TrimSpace(input[5:])
+			if target != "" {
+				if !strings.HasSuffix(strings.ToLower(target), ".json") {
+					target += ".json"
+				}
+				filename = target
+			}
+		}
+		err := g.Load(filename)
+		if err != nil {
+			return true, fmt.Sprintf("Failed to load game from %s: %v", filename, err), nil
+		}
+		return true, fmt.Sprintf("Game successfully loaded from %s", filename), nil
 	}
 
 	// Handle movement commands like "move north" or "north"

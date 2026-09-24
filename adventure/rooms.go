@@ -80,21 +80,27 @@ type coord struct{ x, y, z int }
 
 // MapGenerator holds the state for generating a game map.
 type MapGenerator struct {
-	rand      *rand.Rand
-	width     int
-	height    int
-	grid      map[coord]string // coord -> roomID
-	rooms     map[string]*Room
-	placed    []coord
-	idCounter map[string]int
+	rand        *rand.Rand
+	width       int
+	height      int
+	grid        map[coord]string // coord -> roomID
+	rooms       map[string]*Room
+	placed      []coord
+	idCounter   map[string]int
+	templates   []RoomTemplate
+	startRoomID string
 }
 
 // NewMapGenerator creates a new map generator.
 // The `idCounter` field ensures unique room IDs by tracking the number of rooms
 // created for each base name.
-func NewMapGenerator(seed int64, width, height int) *MapGenerator {
+func NewMapGenerator(seed int64, width, height int, customTemplates ...[]RoomTemplate) *MapGenerator {
 	if seed == 0 {
 		seed = time.Now().UnixNano()
+	}
+	templates := roomTemplates
+	if len(customTemplates) > 0 && len(customTemplates[0]) > 0 {
+		templates = customTemplates[0]
 	}
 	return &MapGenerator{
 		rand:      rand.New(rand.NewSource(seed)),
@@ -104,6 +110,7 @@ func NewMapGenerator(seed int64, width, height int) *MapGenerator {
 		rooms:     make(map[string]*Room),
 		placed:    []coord{},
 		idCounter: make(map[string]int),
+		templates: templates,
 	}
 }
 
@@ -121,20 +128,28 @@ func (mg *MapGenerator) inBounds(c coord) bool {
 }
 
 func (mg *MapGenerator) placeRooms() {
-	// Place entry_hall at center
-	// The retry mechanism ensures that rooms are placed adjacent to existing rooms.
-	// If placement fails after 200 attempts, the room is skipped.
 	cx, cy, cz := mg.width/2, mg.height/2, 0
-	startID := mg.makeID("entry_hall")
-	mg.rooms[startID] = &Room{ID: startID, BasePrompt: roomTemplates[0].Description, Narrative: "", Items: append([]string{}, roomTemplates[0].Items...), Doors: map[string]*Door{}, X: cx, Y: cy, Z: cz}
+	activeTemplates := mg.templates
+	if len(activeTemplates) == 0 {
+		activeTemplates = roomTemplates
+	}
+
+	startT := activeTemplates[0]
+	startID := mg.makeID(startT.Name)
+	mg.startRoomID = startID
+	mg.rooms[startID] = &Room{ID: startID, BasePrompt: startT.Description, Narrative: "", Items: append([]string{}, startT.Items...), Doors: map[string]*Door{}, X: cx, Y: cy, Z: cz}
 	mg.grid[coord{cx, cy, cz}] = startID
 	mg.placed = append(mg.placed, coord{cx, cy, cz})
 
 	dirs := []coord{{0, -1, 0}, {0, 1, 0}, {-1, 0, 0}, {1, 0, 0}, {0, 0, 1}, {0, 0, -1}}
 
-	// For each template (skipping entry_hall) create between 1 and MaxCount copies
-	for _, t := range roomTemplates[1:] {
-		count := mg.rand.Intn(t.MaxCount) + 1
+	// For each template (skipping start room template) create between 1 and MaxCount copies
+	for _, t := range activeTemplates[1:] {
+		maxCount := t.MaxCount
+		if maxCount <= 0 {
+			maxCount = 2
+		}
+		count := mg.rand.Intn(maxCount) + 1
 		for i := 0; i < count; i++ {
 			placedOK := false
 			// try to place adjacent to any existing room
@@ -234,7 +249,10 @@ func (mg *MapGenerator) ensureReachability(createdDoors []*Door) {
 
 	visited := map[string]bool{}
 	var stack []string
-	startID := "entry_hall"
+	startID := mg.startRoomID
+	if startID == "" {
+		startID = "entry_hall"
+	}
 	stack = append(stack, startID)
 	if _, ok := mg.rooms[startID]; ok {
 		visited[startID] = true
@@ -280,15 +298,25 @@ func (mg *MapGenerator) ensureReachability(createdDoors []*Door) {
 // GenerateMapSeeded is the seeded generator. Provide a seed for deterministic
 // output. The default map dimensions are 11x9.
 func GenerateMapSeeded(seed int64) map[string]*Room {
-	mg := NewMapGenerator(seed, 11, 9)
-	mg.placeRooms()
-	createdDoors := mg.createDoors()
-	mg.ensureReachability(createdDoors)
-	return mg.rooms
+	rooms, _ := GenerateMapWithTemplates(seed, roomTemplates)
+	return rooms
 }
 
 // GenerateMap is the default (non-deterministic) generator and delegates to
 // GenerateMapSeeded with a timestamp seed.
 func GenerateMap() map[string]*Room {
 	return GenerateMapSeeded(time.Now().UnixNano())
+}
+
+// GenerateMapWithTemplates generates a map using the specified room templates.
+// Returns the room map and the starting room's unique ID.
+func GenerateMapWithTemplates(seed int64, templates []RoomTemplate) (map[string]*Room, string) {
+	if seed == 0 {
+		seed = time.Now().UnixNano()
+	}
+	mg := NewMapGenerator(seed, 11, 9, templates)
+	mg.placeRooms()
+	createdDoors := mg.createDoors()
+	mg.ensureReachability(createdDoors)
+	return mg.rooms, mg.startRoomID
 }

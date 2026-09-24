@@ -37,6 +37,10 @@ func (g *Game) Load(filename string) error {
 	g.NPCs = tempGame.NPCs
 	g.Timers = tempGame.Timers
 	g.PlayerNotes = tempGame.PlayerNotes
+	g.PlayerHP = tempGame.PlayerHP
+	g.PlayerMaxHP = tempGame.PlayerMaxHP
+	g.ScenarioName = tempGame.ScenarioName
+	g.WorldPrompt = tempGame.WorldPrompt
 	// Do not override TimerCallbacks or AI_ functions
 
 	return nil

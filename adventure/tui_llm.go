@@ -60,10 +60,22 @@ func (g *Game) RunTUIWithLLM(client LLMClient, model string) error {
 	layout.AddItem(input, 1, 0, true)
 
 	// Conversation state for LLM
+	sysPrompt := `You are the narrator of a text adventure game. Use the 'look' tool immediately when the game starts or room changes. Rely on tool outputs for state. Do not invent items or exits. Describe scene atmospherically. Call tools rather than saying you did something.`
+	if g.WorldPrompt != "" {
+		scenarioTitle := g.ScenarioName
+		if scenarioTitle == "" {
+			scenarioTitle = "The World"
+		}
+		sysPrompt = fmt.Sprintf(`You are the narrator of a text adventure game set in: %s.
+Atmosphere & Setting: %s
+
+Use the 'look' tool immediately when the game starts or room changes. Rely on tool outputs for state. Do not invent items or exits. Describe scene atmospherically in the tone of this setting. Call tools rather than saying you did something.`, scenarioTitle, g.WorldPrompt)
+	}
+
 	messages := []openai.ChatCompletionMessage{
 		{
-			Role:    openai.ChatMessageRoleSystem,
-			Content: `You are the narrator of a text adventure game. Use the 'look' tool immediately when the game starts or room changes. Rely on tool outputs for state. Do not invent items or exits. Describe scene atmospherically. Call tools rather than saying you did something.
+			Role: openai.ChatMessageRoleSystem,
+			Content: sysPrompt + `
 			
 Keep persistent notes about the player using update_player_notes (e.g. if they are covered in poop, smelling of lavender, or have a specific injury). These notes will be visible to you in the Look tool output.
 
@@ -205,7 +217,11 @@ NPCs & COMBAT:
 	}
 
 	// Initial render
-	appendNarration("--- Connected to LLM TUI ---")
+	banner := "--- Connected to LLM TUI ---"
+	if g.ScenarioName != "" {
+		banner = fmt.Sprintf("--- Connected to LLM TUI: %s ---", g.ScenarioName)
+	}
+	appendNarration(banner)
 	appendNarration(g.Look())
 	updateViews()
 
