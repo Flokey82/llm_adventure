@@ -231,7 +231,7 @@ func Tools(g *Game) []openai.Tool {
 	room := g.Rooms[g.CurrentRoomID]
 	
 	// Only if room has items
-	if room != nil && len(room.Items) > 0 {
+	if len(room.Items) > 0 {
 		tools = append(tools, allTools["take_item"])
 	}
 

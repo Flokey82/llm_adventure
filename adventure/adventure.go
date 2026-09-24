@@ -5,13 +5,10 @@
 package adventure
 
 import (
-	"context"
 	"fmt"
 	"math/rand"
 	"strings"
 	"time"
-
-	"github.com/Flokey82/animus/pkg/engine"
 )
 
 type Game struct {
@@ -40,10 +37,9 @@ type NPC struct {
 	Disposition int    // 0 = Hostile, 100 = Friendly
 	MaxHP       int    // Maximum hitpoints
 	CurrentHP   int    // Current hitpoints
-	Dead        bool          // True if the NPC is dead
-	Memory      string        // Condensed memory of past interactions
-	History     string        // Lore or history related to the world
-	Agent       *engine.Agent // Autonomous Animus cognitive agent (optional)
+	Dead        bool   // True if the NPC is dead
+	Memory      string // Condensed memory of past interactions
+	History     string // Lore or history related to the world
 }
 
 // NewGame creates a new game instance. Optionally, a seed can be provided for deterministic map generation.
@@ -303,7 +299,7 @@ func (g *Game) UseItem(item, target string) string {
 	return "That doesn't seem to work."
 }
 
-// TalkTo uses the NPC's autonomous Animus agent (if present) or the injected AI_CharacterChat.
+// TalkTo uses the injected AI_CharacterChat to have an NPC respond.
 func (g *Game) TalkTo(npcName, message string) string {
 	// find NPC by name (case-insensitive)
 	var found *NPC
@@ -315,12 +311,6 @@ func (g *Game) TalkTo(npcName, message string) string {
 	}
 	if found == nil {
 		return "You don't see that person here."
-	}
-	if found.Agent != nil {
-		reply, err := found.Agent.Chat(context.Background(), message, "Player")
-		if err == nil && reply != "" {
-			return fmt.Sprintf("%s replies: %s", found.Name, reply)
-		}
 	}
 	if g.AI_CharacterChat == nil {
 		return "No dialogue system is available."

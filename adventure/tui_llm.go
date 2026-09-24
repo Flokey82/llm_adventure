@@ -13,11 +13,7 @@ import (
 // RunTUIWithLLM launches the Text User Interface (TUI) for the game and integrates it with the LLM.
 // This function sets up the layout, handles user input, and manages interactions between the game state and the LLM.
 // The TUI includes panels for narration, event logs, inventory, room view, and a map.
-func (g *Game) RunTUIWithLLM(client LLMClient, model string, toolModelOpt ...string) error {
-	toolModel := model
-	if len(toolModelOpt) > 0 && toolModelOpt[0] != "" {
-		toolModel = toolModelOpt[0]
-	}
+func (g *Game) RunTUIWithLLM(client LLMClient, model string) error {
 	app := tview.NewApplication()
 
 	// Panels
@@ -83,8 +79,115 @@ NPCs & COMBAT:
 		{Role: openai.ChatMessageRoleUser, Content: "Start the game. Look around."},
 	}
 
+	// Helper function to update static views
 	updateViews := func() {
-		renderTUIViews(g, roomView, invView, mapView)
+		// Update the room view with the current room's narrative, items, and doors
+		room := g.Rooms[g.CurrentRoomID]
+		roomView.Clear()
+		// Build readable doors info
+		doors := map[string]string{}
+		for dir, d := range room.Doors {
+			if d == nil {
+				doors[dir] = "(missing)"
+				continue
+			}
+			status := "closed"
+			desc := d.Description
+			if desc == "" {
+				desc = "door"
+			}
+			if d.Open {
+				status = "open"
+			}
+			// Reveal destination only when open
+			if d.Open {
+				if other, _, ok := d.OtherSide(g.CurrentRoomID); ok {
+					doors[dir] = fmt.Sprintf("open %s -> %s", desc, other)
+					continue
+				}
+			}
+			if d.Locked {
+				doors[dir] = fmt.Sprintf("locked %s", desc)
+			} else {
+				doors[dir] = fmt.Sprintf("%s %s", status, desc)
+			}
+		}
+		// Show generated narrative if available, otherwise fall back to base prompt
+		narrative := room.Narrative
+		if narrative == "" {
+			narrative = room.BasePrompt
+		}
+		
+		details := ""
+		if len(room.Details) > 0 {
+			details = "\n" + strings.Join(room.Details, " ")
+		}
+
+		fmt.Fprintf(roomView, "[yellow]%s%s\n\n[white]Items: %s\nDoors: %s", narrative, details, tview.Escape(fmt.Sprintf("%v", room.Items)), tview.Escape(fmt.Sprintf("%v", doors)))
+
+		// Update the inventory view
+		invView.Clear()
+		fmt.Fprintf(invView, "%s", tview.Escape(fmt.Sprintf("%v", g.Inventory)))
+
+		// Update the map view with a small ASCII thumbnail using room coordinates
+		mapView.Clear()
+		fmt.Fprintf(mapView, "Z-Level: %d\n", room.Z)
+		// Build position map and bounds
+		pos := map[string]*Room{}
+		minX, maxX, minY, maxY := 0, 0, 0, 0
+		first := true
+		for _, r := range g.Rooms {
+			if r.Z != room.Z {
+				continue
+			}
+			key := fmt.Sprintf("%d,%d", r.X, r.Y)
+			pos[key] = r
+			if first {
+				minX, maxX, minY, maxY = r.X, r.X, r.Y, r.Y
+				first = false
+				continue
+			}
+			if r.X < minX {
+				minX = r.X
+			}
+			if r.X > maxX {
+				maxX = r.X
+			}
+			if r.Y < minY {
+				minY = r.Y
+			}
+			if r.Y > maxY {
+				maxY = r.Y
+			}
+		}
+		// Draw rows (y increases downward) and highlight rooms with NPCs
+		hasNPC := func(roomID string) bool {
+			for _, n := range g.NPCs {
+				if n.Location == roomID {
+					return true
+				}
+			}
+			return false
+		}
+		for y := minY; y <= maxY; y++ {
+			line := ""
+			for x := minX; x <= maxX; x++ {
+				key := fmt.Sprintf("%d,%d", x, y)
+				if r, ok := pos[key]; ok {
+					if r.ID == g.CurrentRoomID {
+						line += "[green]*[-]"
+					} else if hasNPC(r.ID) {
+						line += "[red]M[-]"
+					} else {
+						line += "[white]o[-]"
+					}
+				} else {
+					line += " "
+				}
+				line += " "
+			}
+			fmt.Fprintln(mapView, line)
+		}
 	}
 
 	appendNarration := func(s string) {
@@ -188,37 +291,17 @@ NPCs & COMBAT:
 				processing = false
 				return
 			}
-
-			// Fast-path: informational quick commands return immediately with 0ms latency
-			lowerCmd := strings.TrimSpace(strings.ToLower(userInput))
-			if lowerCmd == "inventory" || lowerCmd == "inv" || lowerCmd == "i" ||
-				lowerCmd == "look" || lowerCmd == "l" || strings.HasPrefix(lowerCmd, "look ") || strings.HasPrefix(lowerCmd, "peer ") ||
-				lowerCmd == "save" || lowerCmd == "load" ||
-				strings.HasPrefix(out, "There is no door") || strings.HasPrefix(out, "The door is closed") || strings.HasPrefix(out, "You don't see that item here") {
-				if lowerCmd == "look" || lowerCmd == "l" || strings.HasPrefix(lowerCmd, "look ") {
-					g.Tick()
-				}
-				app.QueueUpdateDraw(func() {
-					appendNarration(out)
-					updateViews()
-				})
-				processing = false
-				return
-			}
+			// Not ambiguous: record user and result so the model sees state,
+			// then ask the model to generate narration. Note: we use 'user' role
+			// for the action result to keep the protocol simple for local actions.
+			messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: userInput})
+			messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "ACTION RESULT: " + out})
 
 			// Advance world state (tick) after the player's quick action
 			g.Tick()
 
-			// Route narration through Granite classifier: only call Gemma if Granite says YES
-			modelToUse := model
-			if toolModel != "" && toolModel != model {
-				if !classifyRequiresCreativeNarration(client, toolModel, userInput, out) {
-					modelToUse = toolModel
-				}
-			}
-
-			// Request narration from the chosen model
-			respN, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{Model: modelToUse, Messages: messages})
+			// Request narration from the model without tools
+			respN, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{Model: model, Messages: messages})
 			if err != nil {
 				app.QueueUpdateDraw(func() { appendEvent("LLM error: " + err.Error()) })
 				processing = false
@@ -230,19 +313,8 @@ NPCs & COMBAT:
 				return
 			}
 			msgN := respN.Choices[0].Message
-			cleanContent, embedded := ExtractEmbeddedToolCalls(msgN.Content)
-			if len(embedded) > 0 {
-				_, logs := g.ExecuteToolCallsFromMessage(openai.ChatCompletionMessage{ToolCalls: embedded})
-				for _, l := range logs {
-					app.QueueUpdateDraw(func() { appendEvent("[tool] " + l) })
-				}
-			}
-			if strings.TrimSpace(cleanContent) == "" {
-				cleanContent = "The action takes effect in the darkness."
-			}
-			msgN.Content = cleanContent
 			messages = append(messages, msgN)
-			app.QueueUpdateDraw(func() { appendNarration(cleanContent); updateViews() })
+			app.QueueUpdateDraw(func() { appendNarration(msgN.Content); updateViews() })
 			processing = false
 			return
 		}
@@ -251,8 +323,8 @@ NPCs & COMBAT:
 		messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: userInput})
 		messages = sanitizeMessages(messages)
 
-		// Send request to toolModel for structured action execution
-		req := openai.ChatCompletionRequest{Model: toolModel, Messages: messages, Tools: Tools(g)}
+		// Send request
+		req := openai.ChatCompletionRequest{Model: model, Messages: messages, Tools: Tools(g)}
 		resp, err := client.CreateChatCompletion(context.Background(), req)
 		if err != nil {
 			app.QueueUpdateDraw(func() { appendEvent("LLM error: " + err.Error()) })
@@ -267,20 +339,6 @@ NPCs & COMBAT:
 		}
 
 		msg := resp.Choices[0].Message
-
-		// If model emitted embedded tool calls in Content, extract them into msg.ToolCalls before processing!
-		if len(msg.ToolCalls) == 0 && msg.Content != "" {
-			cleanText, embedded := ExtractEmbeddedToolCalls(msg.Content)
-			if len(embedded) > 0 {
-				msg.ToolCalls = embedded
-				if strings.TrimSpace(cleanText) == "" {
-					cleanText = "A strange ritual power stirs."
-				}
-				msg.Content = cleanText
-			}
-		}
-
-		// Ensure assistant message is valid according to OpenAI protocol (must have Content or ToolCalls)
 		if strings.TrimSpace(msg.Content) == "" && len(msg.ToolCalls) == 0 {
 			msg.Content = "..."
 		}
@@ -298,25 +356,9 @@ NPCs & COMBAT:
 			// Advance world state (tick) after tool execution
 			g.Tick()
 
-			// Ask Granite classifier whether to escalate to Gemma for narration
-			modelToUse := model
-			if toolModel != "" && toolModel != model {
-				isDramatic := false
-				for _, tc := range msg.ToolCalls {
-					fn := tc.Function.Name
-					if fn == "talk_to" || fn == "attack" || fn == "resurrect" || fn == "spawn_npc" || fn == "discover_room" {
-						isDramatic = true
-						break
-					}
-				}
-				if !isDramatic && !classifyRequiresCreativeNarration(client, toolModel, userInput, strings.Join(logs, "; ")) {
-					modelToUse = toolModel
-				}
-			}
-
 			// Ask model to generate narration now that tools have updated state
 			messages = sanitizeMessages(messages)
-			resp2, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{Model: modelToUse, Messages: messages})
+			resp2, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{Model: model, Messages: messages})
 			if err != nil {
 				app.QueueUpdateDraw(func() { appendEvent("LLM error: " + err.Error()) })
 				processing = false
@@ -328,35 +370,17 @@ NPCs & COMBAT:
 				return
 			}
 			msg2 := resp2.Choices[0].Message
-			cleanContent2, embedded2 := ExtractEmbeddedToolCalls(msg2.Content)
-			if len(embedded2) > 0 {
-				_, logs2 := g.ExecuteToolCallsFromMessage(openai.ChatCompletionMessage{ToolCalls: embedded2})
-				for _, l := range logs2 {
-					app.QueueUpdateDraw(func() { appendEvent("[tool] " + l) })
-				}
+			if strings.TrimSpace(msg2.Content) == "" {
+				msg2.Content = "The action is done."
 			}
-			if strings.TrimSpace(cleanContent2) == "" {
-				cleanContent2 = "The manifestation settles into the cold air."
-			}
-			msg2.Content = cleanContent2
 			messages = append(messages, msg2)
-			app.QueueUpdateDraw(func() { appendNarration(cleanContent2); updateViews() })
+			app.QueueUpdateDraw(func() { appendNarration(msg2.Content); updateViews() })
 			processing = false
 			return
 		}
 
-		// No tools called; display model content after cleaning any embedded tool calls
-		cleanContent, embedded := ExtractEmbeddedToolCalls(msg.Content)
-		if len(embedded) > 0 {
-			_, logs := g.ExecuteToolCallsFromMessage(openai.ChatCompletionMessage{ToolCalls: embedded})
-			for _, l := range logs {
-				app.QueueUpdateDraw(func() { appendEvent("[tool] " + l) })
-			}
-		}
-		if strings.TrimSpace(cleanContent) == "" {
-			cleanContent = "You observe the chamber."
-		}
-		app.QueueUpdateDraw(func() { appendNarration(cleanContent); updateViews() })
+		// No tools called; display model content
+		app.QueueUpdateDraw(func() { appendNarration(msg.Content); updateViews() })
 		processing = false
 	}
 
@@ -402,281 +426,6 @@ NPCs & COMBAT:
 		return err
 	}
 	return nil
-}
-
-// RunTUIWithDM runs the game TUI powered by the autonomous Animus Dungeon Master agent.
-func (g *Game) RunTUIWithDM(dm *DungeonMaster) error {
-	app := tview.NewApplication()
-
-	// Panels
-	narration := tview.NewTextView()
-	narration.SetDynamicColors(true)
-	narration.SetBorder(true).SetTitle("Dungeon Master Narration (Animus)")
-
-	eventLog := tview.NewTextView()
-	eventLog.SetBorder(true).SetTitle("World Events")
-
-	roomView := tview.NewTextView()
-	roomView.SetDynamicColors(true)
-	roomView.SetBorder(true).SetTitle("Room")
-
-	invView := tview.NewTextView()
-	invView.SetBorder(true).SetTitle("Inventory")
-
-	mapView := tview.NewTextView()
-	mapView.SetDynamicColors(true)
-	mapView.SetBorder(true).SetTitle("Map")
-
-	helpView := tview.NewTextView()
-	helpView.SetBorder(true).SetTitle("Commands")
-	fmt.Fprintf(helpView, "Commands: look, search, move <dir>, take <item>, use <item>, talk to <npc>, quit")
-
-	input := tview.NewInputField().SetLabel(": ")
-
-	rightTop := tview.NewFlex().SetDirection(tview.FlexRow)
-	rightTop.AddItem(roomView, 0, 2, false)
-	rightTop.AddItem(invView, 0, 1, false)
-	rightTop.AddItem(mapView, 0, 1, false)
-	rightTop.AddItem(helpView, 3, 0, false)
-
-	left := tview.NewFlex().SetDirection(tview.FlexRow)
-	left.AddItem(narration, 0, 3, false)
-	left.AddItem(eventLog, 0, 1, false)
-
-	mainFlex := tview.NewFlex()
-	mainFlex.AddItem(left, 0, 3, false)
-	mainFlex.AddItem(rightTop, 0, 1, false)
-
-	layout := tview.NewFlex().SetDirection(tview.FlexRow)
-	layout.AddItem(mainFlex, 0, 1, false)
-	layout.AddItem(input, 1, 0, true)
-
-	updateViews := func() {
-		renderTUIViews(g, roomView, invView, mapView)
-	}
-
-	appendNarration := func(text string) {
-		fmt.Fprintf(narration, "%s\n\n", tview.Escape(text))
-		narration.ScrollToEnd()
-	}
-
-	appendEvent := func(text string) {
-		fmt.Fprintf(eventLog, "%s\n", tview.Escape(text))
-		eventLog.ScrollToEnd()
-	}
-
-	// Initial scene description
-	appendNarration(fmt.Sprintf("--- Animus Dungeon Master: %s (%s) Connected ---", dm.Config.Name, dm.Config.Title))
-	appendNarration("[yellow]Commands: Type any action, or '/save [name]', '/load [name]', 'quit'[white]")
-	appendNarration(g.Look())
-	updateViews()
-
-	processing := false
-
-	input.SetDoneFunc(func(key tcell.Key) {
-		if key != tcell.KeyEnter || processing {
-			return
-		}
-		cmd := strings.TrimSpace(input.GetText())
-		input.SetText("")
-		if cmd == "" {
-			return
-		}
-
-		lowerCmd := strings.ToLower(cmd)
-		if lowerCmd == "quit" || lowerCmd == "exit" {
-			app.Stop()
-			return
-		}
-
-		if strings.HasPrefix(lowerCmd, "/save") || strings.HasPrefix(lowerCmd, "save ") || lowerCmd == "save" {
-			parts := strings.Fields(cmd)
-			saveFile := "saves/quicksave.json"
-			if len(parts) > 1 {
-				saveFile = parts[1]
-				if !strings.Contains(saveFile, "/") {
-					saveFile = "saves/" + saveFile
-				}
-			}
-			if err := SaveWorld(saveFile, g, dm); err != nil {
-				appendEvent("[error] Save failed: " + err.Error())
-			} else {
-				appendEvent("[system] World state and DM memory saved to " + saveFile)
-			}
-			return
-		}
-
-		if strings.HasPrefix(lowerCmd, "/load") || strings.HasPrefix(lowerCmd, "load ") || lowerCmd == "load" {
-			parts := strings.Fields(cmd)
-			loadFile := "saves/quicksave.json"
-			if len(parts) > 1 {
-				loadFile = parts[1]
-				if !strings.Contains(loadFile, "/") {
-					loadFile = "saves/" + loadFile
-				}
-			}
-			if err := LoadWorld(loadFile, g, dm); err != nil {
-				appendEvent("[error] Load failed: " + err.Error())
-			} else {
-				appendEvent("[system] World state and DM memory restored from " + loadFile)
-				appendNarration(fmt.Sprintf("[yellow]--- World Restored: %s (%s) ---[white]", dm.Config.Name, dm.Config.Title))
-				appendNarration(g.Look())
-				updateViews()
-			}
-			return
-		}
-
-		appendNarration("[green]=> " + cmd + "[white]")
-		processing = true
-
-		go func() {
-			reply, err := dm.Step(context.Background(), cmd)
-			app.QueueUpdateDraw(func() {
-				if err != nil {
-					appendEvent("DM error: " + err.Error())
-				} else {
-					appendNarration(reply)
-				}
-				updateViews()
-				processing = false
-			})
-		}()
-	})
-
-	return app.SetRoot(layout, true).EnableMouse(true).Run()
-}
-
-func renderTUIViews(g *Game, roomView, invView, mapView *tview.TextView) {
-	room := g.Rooms[g.CurrentRoomID]
-	roomView.Clear()
-	if room == nil {
-		return
-	}
-
-	doors := map[string]string{}
-	for dir, d := range room.Doors {
-		if d == nil {
-			doors[dir] = "(missing)"
-			continue
-		}
-		status := "closed"
-		desc := d.Description
-		if desc == "" {
-			desc = "door"
-		}
-		if d.Open {
-			status = "open"
-			if other, _, ok := d.OtherSide(g.CurrentRoomID); ok {
-				doors[dir] = fmt.Sprintf("open %s -> %s", desc, other)
-				continue
-			}
-		}
-		if d.Locked {
-			doors[dir] = fmt.Sprintf("locked %s", desc)
-		} else {
-			doors[dir] = fmt.Sprintf("%s %s", status, desc)
-		}
-	}
-
-	narrative := room.Narrative
-	if narrative == "" {
-		narrative = room.BasePrompt
-	}
-
-	details := ""
-	if len(room.Details) > 0 {
-		details = "\n" + strings.Join(room.Details, " ")
-	}
-
-	fmt.Fprintf(roomView, "[yellow]%s%s\n\n[white]Items: %s\nDoors: %s", narrative, details, tview.Escape(fmt.Sprintf("%v", room.Items)), tview.Escape(fmt.Sprintf("%v", doors)))
-
-	invView.Clear()
-	fmt.Fprintf(invView, "%s", tview.Escape(fmt.Sprintf("%v", g.Inventory)))
-
-	mapView.Clear()
-	fmt.Fprintf(mapView, "Z-Level: %d\n", room.Z)
-	pos := map[string]*Room{}
-	minX, maxX, minY, maxY := 0, 0, 0, 0
-	first := true
-	for _, r := range g.Rooms {
-		if r.Z != room.Z {
-			continue
-		}
-		key := fmt.Sprintf("%d,%d", r.X, r.Y)
-		pos[key] = r
-		if first {
-			minX, maxX, minY, maxY = r.X, r.X, r.Y, r.Y
-			first = false
-			continue
-		}
-		if r.X < minX {
-			minX = r.X
-		}
-		if r.X > maxX {
-			maxX = r.X
-		}
-		if r.Y < minY {
-			minY = r.Y
-		}
-		if r.Y > maxY {
-			maxY = r.Y
-		}
-	}
-
-	hasNPC := func(roomID string) bool {
-		for _, n := range g.NPCs {
-			if n.Location == roomID {
-				return true
-			}
-		}
-		return false
-	}
-
-	for y := minY; y <= maxY; y++ {
-		line := ""
-		for x := minX; x <= maxX; x++ {
-			key := fmt.Sprintf("%d,%d", x, y)
-			if r, ok := pos[key]; ok {
-				if r.ID == g.CurrentRoomID {
-					line += "[green]*[-]"
-				} else if hasNPC(r.ID) {
-					line += "[red]M[-]"
-				} else {
-					line += "[white]o[-]"
-				}
-			} else {
-				line += " "
-			}
-			line += " "
-		}
-		fmt.Fprintln(mapView, line)
-	}
-}
-
-// classifyRequiresCreativeNarration asks the fast tool model to classify whether an action requires heavy creative narration.
-func classifyRequiresCreativeNarration(client LLMClient, toolModel, action, outcome string) bool {
-	if toolModel == "" {
-		return true
-	}
-	resp, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{
-		Model: toolModel,
-		Messages: []openai.ChatCompletionMessage{
-			{
-				Role:    openai.ChatMessageRoleSystem,
-				Content: "Classify if the player's action and outcome requires dramatic creative narration (YES), or is a simple routine mechanic like opening an ordinary door or picking up an item (NO). Reply with ONLY 'YES' or 'NO'.",
-			},
-			{
-				Role:    openai.ChatMessageRoleUser,
-				Content: fmt.Sprintf("Action: %s\nOutcome: %s", action, outcome),
-			},
-		},
-		MaxTokens:   5,
-		Temperature: 0.0,
-	})
-	if err != nil || len(resp.Choices) == 0 {
-		return false
-	}
-	return strings.Contains(strings.ToUpper(resp.Choices[0].Message.Content), "YES")
 }
 
 // sanitizeMessages filters out any invalid assistant messages that lack both content and tool_calls,
