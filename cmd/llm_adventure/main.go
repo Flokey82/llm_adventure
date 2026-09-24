@@ -25,7 +25,7 @@ func main() {
 	flag.StringVar(&model, "model", "granite-4.0-h-tiny-GGUF", "LLM model to use")
 	flag.StringVar(&roomPrompt, "room-prompt", "", "Custom prompt for room generation (defaults to scenario atmosphere)")
 	flag.StringVar(&scenarioFlag, "scenario", "", "Scenario to play: victorian, starship, cyberpunk, sunken, or any custom description")
-	flag.BoolVar(&selectScenario, "select", false, "Interactively choose or describe a scenario on startup")
+	flag.BoolVar(&selectScenario, "select", true, "Interactively choose or describe a scenario on startup")
 	flag.StringVar(&loadSavePath, "load", "", "Path to saved game JSON file to load on start")
 	flag.Parse()
 
@@ -202,7 +202,7 @@ Return a JSON object describing a new room. Structure:
 		door := &adventure.Door{
 			Open: true,
 			A:    fromRoom.ID, ADir: direction,
-			B:    newRoom.ID, BDir: oppDir,
+			B: newRoom.ID, BDir: oppDir,
 		}
 		fromRoom.Doors[direction] = door
 		newRoom.Doors[oppDir] = door
@@ -212,7 +212,6 @@ Return a JSON object describing a new room. Structure:
 
 	// Inject the AI describer so rooms can be generated on first visit.
 	game.AI_GenerateDescription = func(prompt string) string {
-		fmt.Printf("\n[System] Generating new room description via LLM...\n")
 		sysPrompt := roomPrompt
 		if sysPrompt == "" {
 			sysPrompt = fmt.Sprintf("You are an atmospheric writer for an adventure setting: %s. Atmosphere: %s. Generate a static room description based on the provided tags. Keep it concise (2-3 sentences) and evocative.", game.ScenarioName, game.WorldPrompt)

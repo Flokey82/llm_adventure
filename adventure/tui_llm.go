@@ -60,17 +60,23 @@ func (g *Game) RunTUIWithLLM(client LLMClient, model string) error {
 	layout.AddItem(input, 1, 0, true)
 
 	// Conversation state for LLM
-	sysPrompt := `You are the narrator of a text adventure game. Use the 'look' tool immediately when the game starts or room changes. Rely on tool outputs for state. Do not invent items or exits. Describe scene atmospherically. Call tools rather than saying you did something.`
-	if g.WorldPrompt != "" {
-		scenarioTitle := g.ScenarioName
-		if scenarioTitle == "" {
-			scenarioTitle = "The World"
-		}
-		sysPrompt = fmt.Sprintf(`You are the narrator of a text adventure game set in: %s.
+	scenarioTitle := g.ScenarioName
+	if scenarioTitle == "" {
+		scenarioTitle = "The World"
+	}
+	worldAtmosphere := g.WorldPrompt
+	if worldAtmosphere == "" {
+		worldAtmosphere = "A mysterious realm of ancient secrets and lurking dangers."
+	}
+
+	sysPrompt := fmt.Sprintf(`You are the narrator of a text adventure game set in: %s.
 Atmosphere & Setting: %s
 
-Use the 'look' tool immediately when the game starts or room changes. Rely on tool outputs for state. Do not invent items or exits. Describe scene atmospherically in the tone of this setting. Call tools rather than saying you did something.`, scenarioTitle, g.WorldPrompt)
-	}
+CRITICAL RULES:
+1. Deliver vivid, atmospheric second-person narration ("You...").
+2. Rely strictly on game state and tool outputs. Never invent rooms, exits, or items that do not exist in the current room.
+3. Keep narrations concise (1-3 sentences).
+4. NEVER output developer notes (e.g. "- Note: ..."), bullet lists of suggestions, or "What would you like to do next?". Speak purely as the narrator.`, scenarioTitle, worldAtmosphere)
 
 	messages := []openai.ChatCompletionMessage{
 		{
@@ -88,7 +94,6 @@ NPCs & COMBAT:
 - You can resurrect dead NPCs using resurrect if the player uses a suitable method or item.
 - Players can 'attack' NPCs. Describe the results based on the damage dealt.`,
 		},
-		{Role: openai.ChatMessageRoleUser, Content: "Start the game. Look around."},
 	}
 
 	// Helper function to update static views
@@ -222,8 +227,15 @@ NPCs & COMBAT:
 		banner = fmt.Sprintf("--- Connected to LLM TUI: %s ---", g.ScenarioName)
 	}
 	appendNarration(banner)
-	appendNarration(g.Look())
+	initialLook := g.Look()
+	appendNarration(initialLook)
 	updateViews()
+
+	// Seed LLM history with the initial room state so it never hallucinates a different starting room
+	messages = append(messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "Look around."},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: initialLook},
+	)
 
 	processing := false
 
@@ -297,40 +309,60 @@ NPCs & COMBAT:
 					appendEvent(out)
 					showChooser(ambiguous, func(opt string) {
 						res := g.TakeItem(opt)
-						// Record user and result. We use 'user' role for the result
-						// to avoid protocol violations (tool role requires ID).
-						messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: userInput})
-						messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "ACTION RESULT: " + res})
+						messages = append(messages,
+							openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: userInput},
+							openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: res},
+						)
 						app.QueueUpdateDraw(func() { appendNarration(res); updateViews() })
 					})
 				})
 				processing = false
 				return
 			}
-			// Not ambiguous: record user and result so the model sees state,
-			// then ask the model to generate narration. Note: we use 'user' role
-			// for the action result to keep the protocol simple for local actions.
-			messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: userInput})
-			messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "ACTION RESULT: " + out})
 
-			// Advance world state (tick) after the player's quick action
+			lower := strings.ToLower(strings.TrimSpace(userInput))
+
+			// Informational commands: output is already definitive, 0ms latency, zero hallucinations!
+			if lower == "look" || lower == "l" || strings.HasPrefix(lower, "look ") ||
+				lower == "inventory" || lower == "inv" ||
+				lower == "search" ||
+				strings.HasPrefix(lower, "save") || strings.HasPrefix(lower, "load") {
+				messages = append(messages,
+					openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: userInput},
+					openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: out},
+				)
+				app.QueueUpdateDraw(func() { appendNarration(out); updateViews() })
+				processing = false
+				return
+			}
+
+			// Advance world state (tick) after state-changing quick actions (move, take, open)
 			g.Tick()
 
-			// Request narration from the model without tools
+			// Prompt the model for a concise 1-2 sentence atmospheric reaction
+			promptMsg := fmt.Sprintf("Action: %s\nOutcome: %s\nTask: Narrate this outcome in 1-2 concise atmospheric sentences. Do not invent new rooms or items. Do not output bullet points, notes, or questions.", userInput, out)
+			messages = append(messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: promptMsg})
+			messages = sanitizeMessages(messages)
+
 			respN, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{Model: model, Messages: messages})
 			if err != nil {
-				app.QueueUpdateDraw(func() { appendEvent("LLM error: " + err.Error()) })
+				app.QueueUpdateDraw(func() { appendNarration(out); appendEvent("LLM error: " + err.Error()); updateViews() })
 				processing = false
 				return
 			}
 			if len(respN.Choices) == 0 {
-				app.QueueUpdateDraw(func() { appendEvent("LLM returned no choices") })
+				app.QueueUpdateDraw(func() { appendNarration(out); updateViews() })
 				processing = false
 				return
 			}
 			msgN := respN.Choices[0].Message
+			cleanNarration := sanitizeAssistantNarration(msgN.Content)
+			if cleanNarration == "" {
+				cleanNarration = out
+			}
+			msgN.Content = cleanNarration
 			messages = append(messages, msgN)
-			app.QueueUpdateDraw(func() { appendNarration(msgN.Content); updateViews() })
+			app.QueueUpdateDraw(func() { appendNarration(cleanNarration); updateViews() })
 			processing = false
 			return
 		}
@@ -457,4 +489,26 @@ func sanitizeMessages(msgs []openai.ChatCompletionMessage) []openai.ChatCompleti
 		valid = append(valid, m)
 	}
 	return valid
+}
+
+// sanitizeAssistantNarration cleans up raw model narration, removing any stray meta notes,
+// bulleted lists of suggestions, or "What would you like to do next?" artifacts.
+func sanitizeAssistantNarration(raw string) string {
+	lines := strings.Split(raw, "\n")
+	var kept []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		if strings.HasPrefix(lower, "- note:") ||
+			strings.HasPrefix(lower, "note:") ||
+			strings.HasPrefix(lower, "* note:") ||
+			strings.HasPrefix(lower, "what would you like to do") ||
+			strings.HasPrefix(lower, "- what would you like to do") ||
+			strings.HasPrefix(lower, "- exit to ") ||
+			strings.HasPrefix(lower, "- examine ") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
 }

@@ -88,6 +88,7 @@ type MapGenerator struct {
 	placed      []coord
 	idCounter   map[string]int
 	templates   []RoomTemplate
+	doorDescs   []string
 	startRoomID string
 }
 
@@ -197,7 +198,10 @@ func (mg *MapGenerator) createDoors() []*Door {
 	}
 
 	var createdDoors []*Door
-	lateralDescs := []string{"heavy iron door", "creaky oak door", "glass sliding door", "steel reinforced door", "ornate wooden door", "simple wooden door"}
+	lateralDescs := mg.doorDescs
+	if len(lateralDescs) == 0 {
+		lateralDescs = []string{"heavy iron door", "creaky oak door", "glass sliding door", "steel reinforced door", "ornate wooden door", "simple wooden door"}
+	}
 	for c, id := range mg.grid {
 		neighs := map[string]coord{
 			"north": {c.x, c.y - 1, c.z}, "south": {c.x, c.y + 1, c.z},
@@ -310,11 +314,14 @@ func GenerateMap() map[string]*Room {
 
 // GenerateMapWithTemplates generates a map using the specified room templates.
 // Returns the room map and the starting room's unique ID.
-func GenerateMapWithTemplates(seed int64, templates []RoomTemplate) (map[string]*Room, string) {
+func GenerateMapWithTemplates(seed int64, templates []RoomTemplate, doorDescs ...[]string) (map[string]*Room, string) {
 	if seed == 0 {
 		seed = time.Now().UnixNano()
 	}
 	mg := NewMapGenerator(seed, 11, 9, templates)
+	if len(doorDescs) > 0 && len(doorDescs[0]) > 0 {
+		mg.doorDescs = doorDescs[0]
+	}
 	mg.placeRooms()
 	createdDoors := mg.createDoors()
 	mg.ensureReachability(createdDoors)

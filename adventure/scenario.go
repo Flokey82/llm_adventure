@@ -18,6 +18,7 @@ type Scenario struct {
 	Atmosphere  string         `json:"atmosphere"`
 	MonsterName string         `json:"monster_name"`
 	MonsterDesc string         `json:"monster_desc"`
+	DoorDescs   []string       `json:"door_descs"`
 	Templates   []RoomTemplate `json:"templates"`
 }
 
@@ -29,6 +30,7 @@ func PresetScenarios() map[string]Scenario {
 			Atmosphere:  "A decaying Victorian manor shrouded in thick autumn mist, peeling wallpaper, creaking floorboards, and forgotten secrets.",
 			MonsterName: "Grue",
 			MonsterDesc: "A lurking, wordless horror of sharp shadows and many teeth.",
+			DoorDescs:   []string{"creaky oak door", "heavy iron door", "ornate wooden door", "simple wooden door", "reinforced cellar door"},
 			Templates:   roomTemplates,
 		},
 		"starship": {
@@ -36,6 +38,7 @@ func PresetScenarios() map[string]Scenario {
 			Atmosphere:  "A silent, derelict deep-space freighter with flickering emergency sirens, cold titanium bulkheads, hissing atmospheric leaks, and dark crawlways.",
 			MonsterName: "Xenomorphic Stalker",
 			MonsterDesc: "A sleek, chitinous predator slinking silently through the overhead ventilation ducts.",
+			DoorDescs:   []string{"pressurized airlock hatch", "pneumatic bulkhead door", "reinforced blast door", "sliding titanium door", "service hatch"},
 			Templates: []RoomTemplate{
 				{Name: "airlock", Description: "pressurized airlock chamber, blinking red warning beacon, discarded space helmet, heavy airlock hatch", Items: []string{"emergency_beacon", "cutting_torch"}, MaxCount: 1},
 				{Name: "command_bridge", Description: "command bridge, shattered viewscreen showing distant stars, dormant holotable, captain's console", Items: []string{"encryption_keycard"}, MaxCount: 1},
@@ -52,6 +55,7 @@ func PresetScenarios() map[string]Scenario {
 			Atmosphere:  "A neon-drenched dystopian megacity underworld with acid rain, holographic advertisements, dirty noodle stalls, and illicit black clinics.",
 			MonsterName: "Rogue Cyber-Assassin",
 			MonsterDesc: "A heavily augmented mercenary clad in active-camo chrome, vibrating blade unsheathed.",
+			DoorDescs:   []string{"hydraulic steel door", "reinforced security gate", "grated metal shutter", "neon-lit sliding door", "bulletproof glass barrier"},
 			Templates: []RoomTemplate{
 				{Name: "rain_slicked_alley", Description: "steamy alleyway lit by flickering neon signs, puddles reflecting holo-ads, buzzing surveillance drones", Items: []string{"broken_datashard", "stray_drone_battery"}, MaxCount: 1},
 				{Name: "noodle_bar", Description: "cramped noodle shop, steam rising from synthetic broth, synth-jazz playing softly", Items: []string{"chopsticks", "credits_chip"}, MaxCount: 2},
@@ -67,6 +71,7 @@ func PresetScenarios() map[string]Scenario {
 			Atmosphere:  "An ancient pirate shipwreck settled upon a glowing coral reef beneath the cold ocean waves, air pockets trapped in rotting timber cabins.",
 			MonsterName: "Drowned Captain",
 			MonsterDesc: "A barnacle-encrusted pirate captain clutching a rusted cutlass with ghostly glowing eyes.",
+			DoorDescs:   []string{"rotted timber hatch", "waterlogged cabin door", "barnacle-encrusted grating", "rusted iron hatch"},
 			Templates: []RoomTemplate{
 				{Name: "captains_cabin", Description: "tilted wooden cabin, sea water sloshing around boots, rusted sea chest, waterlogged navigation charts", Items: []string{"flintlock_pistol", "brass_compass"}, MaxCount: 1},
 				{Name: "gun_deck", Description: "row of rusted bronze cannons, loose cannonballs rolling in silt, hanging fishing nets", Items: []string{"rusty_cutlass"}, MaxCount: 2},
@@ -83,15 +88,17 @@ func PresetScenarios() map[string]Scenario {
 func GenerateScenario(ctx context.Context, client LLMClient, model, userDescription string) (*Scenario, error) {
 	systemPrompt := `You are an expert game designer creating a text adventure setting.
 Given the player's scenario premise, return a JSON object defining the scenario.
+You MUST provide between 6 and 8 unique rooms in the "templates" list.
 Structure:
 {
   "name": "Short Setting Name",
   "atmosphere": "1-2 sentence atmospheric description for the DM/narrator",
   "monster_name": "Name of a wandering threat/monster",
   "monster_desc": "Short evocative description of the monster",
+  "door_descs": ["thematic door 1", "thematic door 2", "thematic door 3"],
   "templates": [
     {
-      "name": "snake_case_start_room_id",
+      "name": "start_room_id",
       "description": "atmospheric sensory details",
       "items": ["item1", "item2"],
       "max_count": 1
@@ -101,11 +108,34 @@ Structure:
       "description": "atmospheric sensory details",
       "items": ["item"],
       "max_count": 2
+    },
+    {
+      "name": "third_room_id",
+      "description": "atmospheric sensory details",
+      "items": ["item"],
+      "max_count": 2
+    },
+    {
+      "name": "fourth_room_id",
+      "description": "atmospheric sensory details",
+      "items": ["item"],
+      "max_count": 2
+    },
+    {
+      "name": "fifth_room_id",
+      "description": "atmospheric sensory details",
+      "items": ["item"],
+      "max_count": 2
+    },
+    {
+      "name": "sixth_room_id",
+      "description": "atmospheric sensory details",
+      "items": ["item"],
+      "max_count": 1
     }
   ]
 }
-The first room in "templates" MUST be the starting room with max_count: 1.
-Include 6 to 8 unique thematic rooms in total.`
+The first room in "templates" MUST be the starting room with max_count: 1.`
 
 	userMsg := fmt.Sprintf("Premise: %s", userDescription)
 
@@ -135,6 +165,15 @@ Include 6 to 8 unique thematic rooms in total.`
 		return nil, fmt.Errorf("generated scenario contained no room templates")
 	}
 
+	// Backfill generic rooms if small model generated fewer than 4 templates
+	if len(sc.Templates) < 4 {
+		sc.Templates = append(sc.Templates,
+			RoomTemplate{Name: "side_chamber", Description: fmt.Sprintf("a shadowy side chamber in %s", sc.Name), MaxCount: 2},
+			RoomTemplate{Name: "narrow_corridor", Description: fmt.Sprintf("a narrow connecting passage in %s", sc.Name), MaxCount: 3},
+			RoomTemplate{Name: "hidden_recess", Description: fmt.Sprintf("a forgotten alcove tucked away in %s", sc.Name), MaxCount: 1},
+		)
+	}
+
 	return &sc, nil
 }
 
@@ -147,7 +186,7 @@ func NewGameWithScenario(sc Scenario, seed ...int64) *Game {
 		currentSeed = time.Now().UnixNano()
 	}
 
-	rooms, startID := GenerateMapWithTemplates(currentSeed, sc.Templates)
+	rooms, startID := GenerateMapWithTemplates(currentSeed, sc.Templates, sc.DoorDescs)
 	rand.Seed(time.Now().UnixNano())
 
 	g := &Game{
